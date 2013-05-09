@@ -36,12 +36,12 @@ runOCN = True
 
 # Setup needed executables
 runLICEcmd = 'mpirun -np 4 land_ice_model.exe'
-runOCNcmd = 'mpirun -np 4 ocean_model.exe'
+runOCNcmd = 'mpirun -np 4 ocean_model'
 
 # Setup needed files
 liceInput = 'land_ice_grid.nc'
 liceOutput = 'output.nc'
-ocnInput = 'grid.nc'
+ocnInput = 'input.nc'
 ocnOutput = 'output.nc'
 
 # Define number of coupling intervals (assumes you have set dt for each model accordingly, and ocean dt is evenly divisble in land ice dt)
@@ -67,6 +67,9 @@ os.system('rm -rf land_ice/output-files/*')
 os.system('rm -rf ocean/output.*')
 os.system('rm -rf ocean/restart.*')
 os.system('rm -rf ocean/output-files/*')
+
+os.system('mkdir -p land_ice/output-files')
+os.system('mkdir -p ocean/output-files')
 
 for t in range(numCoupleIntervals):
     print '============================================================'
@@ -232,23 +235,34 @@ for t in range(numCoupleIntervals):
             # Set the namelist file properly for a restart or no
             print 'Setting up ocean namelist file'
             if t==0:
-                subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_do_restart.*/   config_do_restart = .false./" namelist.input' , shell=True, executable='/bin/bash')  # no restart
-                subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_write_output_on_startup.*/   config_write_output_on_startup = .true./" namelist.input' , shell=True, executable='/bin/bash')  # write the initial time
-                subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_start_time.*/   config_start_time = \'0000-01-01_00:00:00\'/" namelist.input' , shell=True, executable='/bin/bash')  # set the start time
+                subprocess.check_call('echo "0000-01-01_00:00:00" > restart_timestamp', shell=True, executable='/bin/bash') # Setup initial time stamp.
+                subprocess.check_call('cp grid.nc input.nc', shell=True, executable='/bin/bash') # Copy the initial input file to input.nc
+                subprocess.check_call('sed -i.SEDBACKUP "s/config_write_output_on_startup.*/config_write_output_on_startup = .true./" namelist.input' , shell=True, executable='/bin/bash')  # write the initial time
             else:
-                subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_do_restart.*/   config_do_restart = .true./" namelist.input' , shell=True, executable='/bin/bash') # do a restart
-                subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_write_output_on_startup.*/   config_write_output_on_startup = .false./" namelist.input' , shell=True, executable='/bin/bash')  # don't write the initial time
                 # Get the old stop time so we can set it to be the new start time.
-                p = os.popen('ls -1t output*nc | head -n 1')
-                oldoutputfile=p.read().rstrip()
-                p = os.popen('ncks -v xtime -H -s "%c" ' + oldoutputfile + ' | tail -r -c 65')
-                oldstoptime=p.read().rstrip()
-                subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_start_time.*/   config_start_time = ' + oldstoptime + '/" namelist.input ' , shell=True, executable='/bin/bash')  # set the start time to the old stop time
+                p = os.popen('cat restart_timestamp')
+                endtime = p.read().rstrip().replace(" ", "").replace(":",".")
+                restart_filename = "restart.%s.nc"%endtime
+                subprocess.check_call('cp %s input.nc'%restart_filename, shell=True, executable='/bin/bash')  # Copy the restart file to input.nc
+                subprocess.check_call('sed -i.SEDBACKUP "s/config_write_output_on_startup.*/config_write_output_on_startup = .false./" namelist.input' , shell=True, executable='/bin/bash')  # write the initial time
 
 
             print 'Starting ocean model.'
             subprocess.check_call(runOCNcmd, shell=True, executable='/bin/bash')
             print 'Ocean model completed.'
+            if t == 0:
+                output_filename = "output.0000-01-01_00.00.00.nc"
+            else:
+                p = os.popen('cat restart_timestamp')
+                endtime = p.read().rstrip().replace(" ", "").replace(":",".")
+                output_filename = "output.%s.nc"%endtime
+
+            print "File: %s"%output_filename
+            subprocess.check_call('mv %s output-files/.'%output_filename, shell=True, executable='/bin/bash')
+            print "Moved"
+
+            subprocess.check_call('rm -f output.*.nc', shell=True, executable='/bin/bash')
+            print "Deleted"
             # Don't need to copy output file if the namelist is setup properly
             ### Copy output file so we don't lose it when the model restarts - could use Python's shutil module.  TODO Also may want to change format of the string conversion of t
             ##subprocess.check_call('cp ' + ocnOutput + ' output.' + str(t) + '.nc', shell=True, executable='/bin/bash')
