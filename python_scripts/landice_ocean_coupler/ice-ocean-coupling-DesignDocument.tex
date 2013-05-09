@@ -1,0 +1,199 @@
+ \documentclass[11pt]{report}
+
+\usepackage{epsf,amsmath,amsfonts}
+\usepackage{graphicx}
+
+\usepackage{fullpage}
+\usepackage{mathtools}
+\usepackage{listings}
+\usepackage{float}
+
+\newcommand{\vect}[1]{\mathbf{#1}}
+\restylefloat{figure}
+
+\begin{document}
+
+\title{ MPAS Ice-Ocean Offline Coupling: \\
+Requirements and Design}
+\author{M. Hoffman, D. Jacobsen}
+
+\maketitle
+\tableofcontents
+
+%-----------------------------------------------------------------------
+
+\chapter{Summary}
+
+We present the design for a coupler between the MPAS Ocean and Land Ice models that runs the two models independently for short intervals, modifying the geometry and forcing for each model.
+
+
+%-----------------------------------------------------------------------
+
+\chapter{Requirements}
+
+\section{Requirement: Use existing models with minimal modifications.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+\section{Requirement: The coupler calculates boundary-layer physics}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+Ice sheet model receives updated basal mass balance and basal heat flux.
+
+Ocean model receives updated ocean surface pressure and mass, heat, and salinity fluxes.
+
+\section{Requirement: The two models can run with different time steps.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+%-----------------------------------------------------------------------
+
+\chapter{Algorithmic Formulations}
+
+\section{Design Solution: Use existing models with minimal modifications.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+Using MPAS' restart capability, write a script in Python or Bash that calls each model for set periods of time, recalculates forcings for the two models, and then restarts each.    
+
+\section{Design Solution: The coupler calculates boundary-layer physics}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+
+
+\begin{figure}
+  \center{\includegraphics[width=8cm]{./coupler.png}}
+  \caption{Diagram of information the coupler needs to calculate (black circles) and pass to each model (arrows).}
+  \label{coupler}
+\end{figure} 
+
+\subsection{Long term}
+ Apply boundary-layer physics from ISOMIP experiments (Hunter 2006, Losch 2008, Holland and Jenkins 1999).
+
+\subsection{Short term}
+Simplified calculation of forcings:
+
+Ice Sheet Forcings
+\begin{itemize}
+\item
+BMB = linear function of ocean temperature
+\item 
+BHF not initially needed since MPAS land ice currently does not perform column temperature diffusion, which is the calculation that this would affect.
+\end{itemize}
+
+Ocean Forcings
+\begin{itemize}
+\item
+ocean surface pressure
+\begin{equation}
+    \label{pressure}
+	P_{os} = \rho_i g H
+\end{equation}
+where $P_{os}$ is the ocean surface pressure (Pa), $\rho_i$ is ice density (kg m$^{-3}$), and $H$ is ice thickness (m). 
+\item 
+ocean surface mass flux = BMB
+
+\item
+ocean surface heat flux
+
+Assume ice at 0$^{\circ}$ C.
+
+\item
+ocean surface salinity flux
+
+Assume melt is fresh.  What about refreezing?
+
+\end{itemize}
+
+
+\section{Design Solution: The two models can run with different time steps.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+For some applications we may want to run both models at the same time step and for others we will want to allow the ice sheet model to have a longer time step for efficiency.  The ice sheet model typically runs with time steps of $\sim$0.1-1.0 years.  The ocean model typically runs with time steps of $\sim$1 hr.
+
+At each coupling, the coupler will calculate $P_{os}$ and the various fluxes using the current state of both models.  (An alternative would be to make the fluxes based on some backward-looking average of the state in the ocean model.)  These fields will then be held constant within each model until the next coupling.  Because the fluxes are specified as rates, no additional modification needs to be done.  This also ensures that mass and energy will be conserved since both models are using the same fluxes over the same total time.  We impose the requirement that the ocean time step be evenly divisible into the land ice time step.
+
+
+\begin{figure}[hbt]
+  \center{\includegraphics[width=12cm]{./coupler-time.png}}
+  \caption{Diagram of typical time steps for the two models.}
+  \label{coupler-time}
+\end{figure} 
+
+%-----------------------------------------------------------------------
+
+\chapter{Design and Implementation}
+
+
+\section{Implementation: Use existing models with minimal modifications.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+We will use Python to write the coupler because it is cross-platform, allows both system calls (running the model) and calculations (netCDF I/O, matrix math), and is familiar to the developers (MJH, DJ).
+
+Each model will need to be setup (compiled, input file created, namelist file created) separately.  Initially we will require that both models use the same grid, though we could explore relaxing that requirement later.  The coupler does not need to know the models' time steps (unless the flux calculations are based on a time-average from the ocean model).   The order in which the two models are run does not matter, and we could explore running them in parallel.
+
+\begin{lstlisting}[numbers=left, numberstyle=\tiny, basicstyle=\small, stringstyle=\ttfamily, mathescape, escapeinside={@}{@}]
+Initialize - identify executables and input/output files for each model
+Read ice sheet input file for thickness and basal temperature initial state
+Read ocean model input file for surface temperature and salinity initial state
+Calculate @$P_{os}$@
+Calculate boundary layer fluxes
+Write BMB, BHF to ice sheet model input file on first call
+Write @$P_{os}$@, fluxes to ocean model input file
+Run ocean model
+Run ice sheet model
+for t in range(coupleIntervals):   # How do we want to keep time?
+	Copy ice sheet and ocean output files
+	Read ice sheet output file for thickness and basal temperature
+	Read ocean model output file for surface temperature and salinity
+	Calculate @$P_{os}$@
+	Calculate boundary layer fluxes
+	Write BMB, BHF to ice sheet model restart file 
+	Write @$P_{os}$@ to ocean model restart file
+	Run ocean model
+	Run ice sheet model
+\end{lstlisting}
+
+
+\section{Implementation: The coupler calculates boundary-layer physics}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+It will be cleaner to put these calculations in Python functions are a separate python module so the simplified calculations can be swapped out for the more sophisticated boundary-layer physics calculations.
+
+\section{Implementation: The two models can run with different time steps.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+This is implemented by specifying different time steps in the namelist files for each model.
+
+
+%-----------------------------------------------------------------------
+
+\chapter{Testing}
+
+\section{Testing: Use existing models with minimal modifications.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+\section{Testing: The coupler calculates boundary-layer physics}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+Run ISOMIP through the coupler.
+
+\section{Testing: The two models can run with different time steps.}
+Date last modified: 2013/03/08 \\
+Contributors: MJH \\
+
+
+\begin{itemize}
+\item 
+\end{itemize}
+%-----------------------------------------------------------------------
+
+\end{document}

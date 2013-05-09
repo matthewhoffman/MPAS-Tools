@@ -1,0 +1,55 @@
+&land_ice_model
+   config_time_integration = 'ForwardEuler' 
+   config_thickness_advection = 'FO-Upwind'
+   config_tracer_advection = 'None'
+   config_stats_interval = 1
+   config_dycore = 'SIA'
+   config_forcing_frequency = 'Annual'
+   config_allow_additional_advance = true
+   config_marine_advance = 'CFBC'
+!   config_calving_law = 'critical-thicknes'
+!   config_calving_critical_thickness = 300.0
+   config_dynamic_thickness = 0.0
+
+! use the same calendar type in both models
+   config_calendar_type = 'gregorian_noleap'
+! set the dt of the land ice model to be evenly divisble by the dt of the ocean model
+   config_dt_years = 1.0
+! the start time does not matter because the script will set it.  But it needs to be present.
+   config_start_time = 0007-01-01_00:00:00
+! the script uses run_duration instead of stop_time.  Be sure run_duration is present and stop_time is not.  The run duration of both the land ice and ocean models should be the same
+   config_run_duration = '365_00:00:00'
+!!!   config_stop_time = '0001-01-01_00:00:00'
+! write_output_on_startup must be present.  value does not matter because script will set it.
+   config_write_output_on_startup = .true.
+/
+
+&advection
+ config_vert_tracer_adv_order = 2
+ config_horiz_tracer_adv_order = 3
+ config_coef_3rd_order    =  0.25
+ config_monotonic         =  true
+ config_check_monotonicity = true
+/
+
+&io
+! you can use any name for input, but script assumes restart_name is restart.nc and output_name is output.nc
+   config_input_name = 'land_ice_grid.nc'
+   config_output_name = 'output.nc'
+   config_restart_name = 'restart.nc'
+! make sure you get at least one output per run
+   config_output_interval = '00_00:01:00'
+! frames_per_outfile needs to be 0.  The script assumes that the output from each run is named 'output.nc', 
+! which will be the case when 0 is used.  If a positive integer is used, then MPAS adds a timestamp to each file name,
+! but this mode causes problems because it also currently writes an empty file for the initial time of output write_output_on_startup=false
+   config_frames_per_outfile = 0
+/
+
+&restart
+! You want to make sure a restart file is written with the last time step of the run (if not more frequent).
+! For the ice model we will probably not do more than a single time step per run, so set this to write a restart every time step.
+   config_restart_interval = '001_00:00:00'
+! do_restart needs to be present but the value doesn't matter because script will set it.
+   config_do_restart = .true.
+
+/
