@@ -31,8 +31,8 @@ except ImportError:
 # =======================================
 
 # Set if you are using data or running a model
-runLICE = True
-runOCN = False
+runLICE = False
+runOCN = True
 
 # Setup needed executables
 runLICEcmd = 'mpirun -np 4 land_ice_model.exe'
@@ -52,9 +52,12 @@ numCoupleIntervals = 8
 rhoi = 900.0  # land ice model's ice density (kg m^-3)
 grav = 9.8101 # gravitational acceleration
 
+exchangeVel = 0.0001 # m/s
+waterSpecificHeat = 3974 # J / (kg * K)
+latentHeatFusion = 334000 # J / kg
+
+
 # =======================================
-
-
 
 # clean up previous runs
 os.system('rm -rf land_ice/output.*')
@@ -65,7 +68,7 @@ os.system('rm -rf ocean/output.*')
 os.system('rm -rf ocean/restart.*')
 os.system('rm -rf ocean/output-files/*')
 
-for t in range(numCoupleIntervals):   
+for t in range(numCoupleIntervals):
     print '============================================================'
     print 'Starting coupling number ', t
 
@@ -73,7 +76,7 @@ for t in range(numCoupleIntervals):
     # 1. Get the appropriate files and variables for the coupler
     # =======================================
 
-    # Get the appropriate source and destination files for the input/output of the coupler 
+    # Get the appropriate source and destination files for the input/output of the coupler
     if t==0:
         if runLICE:
             # Use I.C. from input files as Source at initial time
@@ -88,7 +91,7 @@ for t in range(numCoupleIntervals):
             # TODO - set this up properly for the ocean model
             # Use I.C. from input files as Source at initial time
             ocnSourceFile =  NetCDFFile('./ocean/'+ocnInput,'r')
-            # At initial time, we want to write to the input files  
+            # At initial time, we want to write to the input files
             ocnDestFile =  NetCDFFile('./ocean/'+ocnInput,'r+')
         else:
             # TODO Read from a file
@@ -122,25 +125,26 @@ for t in range(numCoupleIntervals):
     # Get the Source fields needed by the coupler
     # (Get the -1 time level for all variables - this will be the last whether this is from input or output
     try:
-        liceThickness = liceSourceFile.variables['thickness'][-1,:]  
+        liceThickness = liceSourceFile.variables['thickness'][-1,:]
         liceBasalTemp = liceSourceFile.variables['temperature'][-1,:,-1]
     except:
         print "Problem getting needed Source fields from the land ice files"
     try:
-        ocnSurfTemp = ocnSourceFile.variables['temperature'][-1,:,0]  
-        ocnSurfSalin = ocnSourceFile.variables['salinity'][-1,:,0]  
+        ocnSurfTemp = ocnSourceFile.variables['temperature'][-1,:,0]
+        ocnSurfDensity = ocnSourceFile.variables['density'][-1,:,0]
     except:
         print "Problem getting needed Source fields from the ocean files"
 
     # Get the destination fields needed by the coupler
     try:
-        liceBMB = liceDestFile.variables['marineBasalMassBalTimeSeries'][:,0]  # There should only be on time level  
+        liceBMB = liceDestFile.variables['marineBasalMassBalTimeSeries'][:,0]  # There should only be on time level
         #liceBHF = liceDestFile.variables['basalHeatFluxTimeSeries'][:,0]  # NEED TO RESTRICT THIS TO CELLS WITH ICE
     except:
         print "Problem getting needed Destination fields from the land ice files"
     try:
-        ocnSurfPressure = ocnDestFile.variables['ssh'][0,:]  # TODO WHAT IS THE PROPER VARIABLE HERE?
-        # TODO WHAT ARE THE PROPER VARIABLE FOR MASS, HEAT, AND SALINITY FLUXES?
+        ocnSurfPressure = ocnDestFile.variables['seaSurfacePressure'][0,:]
+        ocnSurfTempFlux = ocnDestFile.variables['surfaceTemperatureFlux'][0,:]
+        ocnSurfMassFlux = ocnDestFile.variables['surfaceMassFlux'][0,:]
     except:
         print "Problem getting needed Destination fields from the ocean files"
 
@@ -155,6 +159,14 @@ for t in range(numCoupleIntervals):
 
     # Calculate boundary layer fluxes - this could be an internal or external function call
     #calculateBdyLyrFluxes(liceBasalTemp, ocnSurfTemp, ocnSurfSalin,   liceBHF, ocnMassFlux, ocnHeatFlux, ocnSalinFlux) #TODO
+
+### Ice Presure Melting Point ###
+
+### Heat Flux ####
+# Q_t = rho * waterSpecificHeat * exchangeVel * ( T_water - T_ice)
+
+### Mass Flux ####
+# Q_m = Q_t / (rho * latentHeatFusion)
 
 
     # =======================================
@@ -258,7 +270,7 @@ print 'Coupled model run complete!'
 if runLICE:
     try:
         os.chdir('land_ice/output-files')
-        subprocess.check_call('ncrcat output.*.nc output-all.nc', shell=True, executable='/bin/bash') 
+        subprocess.check_call('ncrcat output.*.nc output-all.nc', shell=True, executable='/bin/bash')
         os.chdir('../..')
     except:
         sys.exit('Failed combining land ice output files!')
@@ -267,7 +279,7 @@ if runLICE:
 if runOCN:
     try:
         os.chdir('ocean/output-files')
-        subprocess.check_call('ncrcat output.*.nc output-all.nc', shell=True, executable='/bin/bash') 
+        subprocess.check_call('ncrcat output.*.nc output-all.nc', shell=True, executable='/bin/bash')
         os.chdir('../..')
     except:
         sys.exit('Failed combining ocean output files!')
