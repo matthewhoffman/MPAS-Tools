@@ -6,7 +6,7 @@
    config_dycore = 'SIA'
    config_forcing_frequency = 'Annual'
    config_allow_additional_advance = true
-   config_marine_advance = 'CFBC'
+!   config_marine_advance = 'CFBC'
 !   config_calving_law = 'critical-thicknes'
 !   config_calving_critical_thickness = 300.0
    config_dynamic_thickness = 0.0
@@ -14,9 +14,9 @@
 ! use the same calendar type in both models
    config_calendar_type = 'gregorian_noleap'
 ! set the dt of the land ice model to be evenly divisble by the dt of the ocean model
-   config_dt_years = 1.0
+   config_dt_years = 0.1
 ! the start time does not matter because the script will set it.  But it needs to be present.
-   config_start_time = 0007-01-01_00:00:00
+   config_start_time = 0003-01-01_00:00:00
 ! the script uses run_duration instead of stop_time.  Be sure run_duration is present and stop_time is not.  The run duration of both the land ice and ocean models should be the same
    config_run_duration = '365_00:00:00'
 !!!   config_stop_time = '0001-01-01_00:00:00'
@@ -38,7 +38,7 @@
    config_output_name = 'output.nc'
    config_restart_name = 'restart.nc'
 ! make sure you get at least one output per run
-   config_output_interval = '00_00:01:00'
+   config_output_interval = '365_00:00:00'
 ! frames_per_outfile needs to be 0.  The script assumes that the output from each run is named 'output.nc', 
 ! which will be the case when 0 is used.  If a positive integer is used, then MPAS adds a timestamp to each file name,
 ! but this mode causes problems because it also currently writes an empty file for the initial time of output write_output_on_startup=false
@@ -48,7 +48,7 @@
 &restart
 ! You want to make sure a restart file is written with the last time step of the run (if not more frequent).
 ! For the ice model we will probably not do more than a single time step per run, so set this to write a restart every time step.
-   config_restart_interval = '001_00:00:00'
+   config_restart_interval = '365_00:00:00'
 ! do_restart needs to be present but the value doesn't matter because script will set it.
    config_do_restart = .true.
 
