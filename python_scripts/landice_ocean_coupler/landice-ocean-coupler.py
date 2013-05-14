@@ -31,8 +31,8 @@ except ImportError:
 # =======================================
 
 # Set if you are using data or running a model
-runLICE = False
-runOCN = True
+runLICE = True
+runOCN = False
 
 # Setup needed executables
 runLICEcmd = 'mpirun -np 4 land_ice_model.exe'
@@ -75,12 +75,81 @@ os.system('rm -rf ocean/output-files/*')
 os.system('mkdir -p land_ice/output-files')
 os.system('mkdir -p ocean/output-files')
 
+# =======================================
+# =======================================
+# 0. At time 0, run both models once without timestepping to fill in the necessary diagnostic variables
+#    (land ice needs the lower surface, ocean model needs the density and pressure fields.)
+# =======================================
+# =======================================
+
+print 'Performing diagnostic run for time 0.'
+
+# === LAND ICE MODEL ===
+try:
+    if runLICE:
+        os.chdir('land_ice')
+        # Set the namelist file properly for a restart or no and set the start and stop times
+        print 'Setting up land ice namelist file'
+        subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_do_restart.*/   config_do_restart = .false./" namelist.input' , shell=True, executable='/bin/bash')  # no restart
+        print 'set no restart'
+        subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_write_output_on_startup.*/   config_write_output_on_startup = .true./" namelist.input' , shell=True, executable='/bin/bash')  # write the initial time
+        print 'set write initial time'
+        subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_start_time.*/   config_start_time = \'0000-01-01_00:00:00\'/" namelist.input' , shell=True, executable='/bin/bash')  # set the start time
+        print 'set start time'
+        print 'Starting land ice model.'
+        subprocess.check_call(runLICEcmd, shell=True, executable='/bin/bash')
+        print 'Land ice model completed.'
+        # Don't need to copy output file if the namelist is setup properly
+        ### Copy output file so we don't lose it when the model restarts - could use Python's shutil module.  TODO Also may want to change format of the string conversion of t
+        subprocess.check_call('cp ' + liceOutput + ' ./output-files/output.' + '{0:04d}'.format(t+1) + '.nc', shell=True, executable='/bin/bash')  # the number is the ending time level (if there are more than one)
+        subprocess.check_call('cp log.0000.out ./output-files/log.0000.' + '{0:04d}'.format(t+1) + '.out', shell=True, executable='/bin/bash')  # the number is the ending time level (if there are more than one)
+        subprocess.check_call('cp log.0000.err ./output-files/log.0000.' + '{0:04d}'.format(t+1) + '.err', shell=True, executable='/bin/bash')  # the number is the ending time level (if there are more than one)
+
+        os.chdir('..')
+except:
+    sys.exit('Land Ice model failed!')
+
+
+# === OCEAN MODEL ===
+try:
+    if runOCN:
+        os.chdir('ocean')
+        # Set the namelist file properly for a restart or no
+        print 'Setting up ocean namelist file'
+        if t==0:
+            subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_do_restart.*/   config_do_restart = .false./" namelist.input' , shell=True, executable='/bin/bash')  # no restart
+            subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_write_output_on_startup.*/   config_write_output_on_startup = .true./" namelist.input' , shell=True, executable='/bin/bash')  # write the initial time
+            subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_start_time.*/   config_start_time = \'0000-01-01_00:00:00\'/" namelist.input' , shell=True, executable='/bin/bash')  # set the start time
+        else:
+            subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_do_restart.*/   config_do_restart = .true./" namelist.input' , shell=True, executable='/bin/bash') # do a restart
+            subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_write_output_on_startup.*/   config_write_output_on_startup = .false./" namelist.input' , shell=True, executable='/bin/bash')  # don't write the initial time
+            # Get the old stop time so we can set it to be the new start time.
+            p = os.popen('ls -1t output*nc | head -n 1')
+            oldoutputfile=p.read().rstrip()
+            p = os.popen('ncks -v xtime -H -s "%c" ' + oldoutputfile + ' | tail -r -c 65')
+            oldstoptime=p.read().rstrip()
+            subprocess.check_call('sed -i.SEDBACKUP "s/^.*config_start_time.*/   config_start_time = ' + oldstoptime + '/" namelist.input ' , shell=True, executable='/bin/bash')  # set the start time to the old stop time
+
+
+        print 'Starting ocean model.'
+        subprocess.check_call(runOCNcmd, shell=True, executable='/bin/bash')
+        print 'Ocean model completed.'
+        # Don't need to copy output file if the namelist is setup properly
+        ### Copy output file so we don't lose it when the model restarts - could use Python's shutil module.  TODO Also may want to change format of the string conversion of t
+        ##subprocess.check_call('cp ' + ocnOutput + ' output.' + str(t) + '.nc', shell=True, executable='/bin/bash')
+        os.chdir('..')
+except:
+    sys.exit('Ocean model failed!')
+
+
 for t in range(numCoupleIntervals):
     print '============================================================'
     print 'Starting coupling number ', t
 
     # =======================================
+    # =======================================
     # 1. Get the appropriate files and variables for the coupler
+    # =======================================
     # =======================================
 
     # Get the appropriate source and destination files for the input/output of the coupler
@@ -164,7 +233,9 @@ for t in range(numCoupleIntervals):
 
 
     # =======================================
+    # =======================================
     # 2. Do the coupler calculations
+    # =======================================
     # =======================================
 
     # (these could be function calls)
@@ -204,7 +275,9 @@ for t in range(numCoupleIntervals):
 
 
     # =======================================
+    # =======================================
     # 3. Write the new forcing data to the files
+    # =======================================
     # =======================================
 
     # Write new quantities to the destination files
@@ -213,7 +286,9 @@ for t in range(numCoupleIntervals):
     ocnDestFile.close()
 
     # =======================================
+    # =======================================
     # 4. Run the models
+    # =======================================
     # =======================================
     # TODO Do we want to do this in parallel?  Probably no reason to do so.
 
@@ -221,7 +296,6 @@ for t in range(numCoupleIntervals):
     # === LAND ICE MODEL ===
     try:
         if runLICE:
-            print 'hello'
             os.chdir('land_ice')
             # Set the namelist file properly for a restart or no and set the start and stop times
             print 'Setting up land ice namelist file'
@@ -309,7 +383,9 @@ print 'Coupled model run complete!'
 
 
 # =======================================
+# =======================================
 # 5. Post-processing
+# =======================================
 # =======================================
 
 # After the coupled run is completed, we may want to go in and use NCO to patch together all of the output files for each model.
