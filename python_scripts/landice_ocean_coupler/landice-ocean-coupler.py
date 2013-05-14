@@ -2,7 +2,7 @@
 # Coupler for the MPAS Ocean and Land Ice models
 # Matt Hoffman, March 8, 2013
 
-import numpy
+import numpy as np
 import os, sys, subprocess
 import time
 #import matplotlib.pyplot as plt
@@ -50,7 +50,11 @@ numCoupleIntervals = 8
 
 # Some parameters
 rhoi = 900.0  # land ice model's ice density (kg m^-3)
+rhow = 1000.0  # density of pure water (kg m^-3)
 grav = 9.8101 # gravitational acceleration
+secondsInYear = 3600.0 * 24.0 * 365.0  # number of seconds in a year
+
+ocnThicknessMin = 50.0  # limit to how thin the ocean can be (m)
 
 exchangeVel = 0.0001 # m/s
 waterSpecificHeat = 3974 # J / (kg * K)
@@ -129,12 +133,19 @@ for t in range(numCoupleIntervals):
     # (Get the -1 time level for all variables - this will be the last whether this is from input or output
     try:
         liceThickness = liceSourceFile.variables['thickness'][-1,:]
+        liceLowerSurface = liceSourceFile.variables['lowerSurface'][-1,:]
+        liceBedTopography = liceSourceFile.variables['bedTopography'][-1,:]
         liceBasalTemp = liceSourceFile.variables['temperature'][-1,:,-1]
     except:
         print "Problem getting needed Source fields from the land ice files"
     try:
         ocnSurfTemp = ocnSourceFile.variables['temperature'][-1,:,0]
         ocnSurfDensity = ocnSourceFile.variables['density'][-1,:,0]
+        ocnSurfSalinity = ocnSourceFile.variables['salinity'][-1,:,0]
+        ocnSurfPressure = ocnSourceFile.variables['pressure'][-1,:,0]
+        ocnBottomLayerDensity = ocnSourceFile.variables['density'][-1,:,-1]  # density of bottom layer
+        ocnBottomLayerPressure = ocnSourceFile.variables['pressure'][-1,:,-1] # pressure at center of bottom layer
+        ocnBottomLayerThickness = ocnSourceFile.variables['layerThickness'][-1,:,-1] # thickness of bottom layer
     except:
         print "Problem getting needed Source fields from the ocean files"
 
@@ -156,20 +167,40 @@ for t in range(numCoupleIntervals):
     # 2. Do the coupler calculations
     # =======================================
 
-    # Calculate the ocean surface pressure - this could be a function call
-    # TODO WHAT TO DO ABOUT NON-ICE SHELF OCEAN CELLS?
-#    ocnSurfPressure = rhoi * grav * liceThickness  # TODO ARE THESE THE PROPER UNITS?
+    # (these could be function calls)
 
-    # Calculate boundary layer fluxes - this could be an internal or external function call
-    #calculateBdyLyrFluxes(liceBasalTemp, ocnSurfTemp, ocnSurfSalin,   liceBHF, ocnMassFlux, ocnHeatFlux, ocnSalinFlux) #TODO
+    # --- Calculate the ocean surface pressure 
+    # Where there is no ice, this will take a value of 0.0
+    # Some areas will have ice that is thick enough to make a negative ocean thickness (grounded ice).  
+    # In these locations instead assign the ocean surface pressure to leave some small amount of water in the ocean,
+    # based on the parameter defined above called ocnThicknessMin.
 
-### Ice Presure Melting Point ###
+    # compute pressure at bottom of ocean: take the pressure at the center of the bottom cell and add on pressure due to the 
+    # lower half of the bottom cell.
+    ocnBottomPressure = ocnBottomLayerPressure + ocnBottomLayerDensity * grav * (0.5 * ocnBottomLayerThickness)
+    ocnSurfPressureLimit = (ocnBottomPressure - ocnBottomLayerDensity * grav * ocnThicknessMin)
+    ocnSurfPressure = np.minimum(rhoi * grav * liceThickness, ocnSurfPressureLimit)  # Units: Pa
 
-### Heat Flux ####
-# Q_t = rho * waterSpecificHeat * exchangeVel * ( T_water - T_ice)
 
-### Mass Flux ####
-# Q_m = Q_t / (rho * latentHeatFusion)
+    # --- Calculate boundary layer fluxes
+    ###calculateBdyLyrFluxes(liceBasalTemp, ocnSurfTemp, ocnSurfSalin,   liceBHF, ocnMassFlux, ocnHeatFlux, ocnSalinFlux) 
+
+    # Create a mask of where the ice shelf is located
+    isShelf = (liceLowerSurface > liceBedTopography)
+
+    # Heat Flux: Eq. 3 from ISOMIP.  Tf should be in-situ freezing point of seawater at the local pressure.
+    a = -.0573     # C/psu Salinity coefficient of freezing equation
+    b = .0939      # C Salinity coefficient of freezing equation
+    c = -7.53e-8   # C/Pa Salinity coefficient of freezing equation
+    Tf = a * ocnSurfaceSalinity + b + c * ocnSurfacePressure     # Eq. 1 from Holland and Jenkins, Modeling Thermodynamic IceOcean Interactions at the Base of an Ice Shelf. J. Physical Oceanography, Aug 1999.
+    heatFlux = ocnSurfDensity * waterSpecificHeat * exchangeVel * (ocnSurfTemp - Tf)  # upward positive, units: W/m2
+    heatFlux[not(isShelf)] = 0.0  # Only allow a heat flux where you have an ice shelf
+    ocnSurfTempFlux = heatFlux # TODO: What should this be exactly???
+    
+    # Mass Flux: Eq. 4, modified
+    massFlux = heatFlux / latentHeatFusion  # positive=melting, units: kg/(m2 s); divide by appropriate density to get thickness rate of change for each model component.
+    ocnSurfMassFlux = massFlux / rhow  # units: m of water per second.  Assuming pure freshwater density here - TODO is that right?
+    liceBMB = -massFlux / rhoi * secondsInYear  # units: m of ice per yr
 
 
     # =======================================
@@ -178,7 +209,8 @@ for t in range(numCoupleIntervals):
 
     # Write new quantities to the destination files
     # TODO Does this need to be done explicitly?  I always forget how netCDF i/o works in python precisely.
-
+    liceDestFile.close()
+    ocnDestFile.close()
 
     # =======================================
     # 4. Run the models
@@ -299,7 +331,7 @@ if runOCN:
         sys.exit('Failed combining ocean output files!')
 
 print 'Combined output files.'
-print 'Successful competion.'
+print 'Successful completion.'
 
 
 
