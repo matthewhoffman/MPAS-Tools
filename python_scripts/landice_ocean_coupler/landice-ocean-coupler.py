@@ -23,12 +23,16 @@ except ImportError:
 # In the future we may want to add command line arguments using the optParse module.
 
 # The script assumes you have setup a directory structure:
-#  ocean model is setup in ./ocean
-#  land ice model is setup in  ./land_ice
-#  and each has a subdirectory called 'output-files' where all the output is accumulated.
+#  ocean model is setup in BASEDIR/ocean
+#  land ice model is setup in BASEDIR/land_ice
+#  Each has a subdirectory called 'output-files' where all the output is accumulated.
+#  Each directory has the appropriate executable, input .nc file, and graph.info files located there.
+#  namelist.input.land_ice and namelist.input.ocean should be located in BASEDIR.  THe script will copy them to the run directories.
 
 
 # =======================================
+
+BASEDIR='/Users/mhoffman/documents/mpas-git/MPAS-Tools/python_scripts/landice_ocean_coupler/dome-island-testcase'
 
 # Set if you are using data or running a model
 runLICE = True
@@ -38,7 +42,7 @@ runOCN = False
 runLICEcmd = 'mpirun -np 4 land_ice_model.exe'
 runOCNcmd = 'mpirun -np 4 ocean_model'
 
-# Setup needed files
+# Setup needed file names
 liceInput = 'land_ice_grid.nc'
 liceOutput = 'output.nc'
 ocnInput = 'input.nc'
@@ -62,18 +66,22 @@ latentHeatFusion = 334000 # J / kg
 
 
 # =======================================
-
+os.chdir(BASEDIR)  # actually move to the appropriate directory location and do all operations there and in its subdirs.
 # clean up previous runs
 os.system('rm -rf land_ice/output.*')
 os.system('rm -rf land_ice/restart.*')
 os.system('rm -rf land_ice/log.*')
-os.system('rm -rf land_ice/output-files/*')
+os.system('rm -rf land_ice/output-files')  # completely remove this dir before starting
 os.system('rm -rf ocean/output.*')
 os.system('rm -rf ocean/restart.*')
-os.system('rm -rf ocean/output-files/*')
+os.system('rm -rf ocean/output-files')  # completely remove this dir before starting
 
 os.system('mkdir -p land_ice/output-files')
 os.system('mkdir -p ocean/output-files')
+
+# copy in the namelist templates to the run dirs.
+os.system('cp namelist.input.land_ice land_ice/namelist.input')
+os.system('cp namelist.input.ocean ocean/namelist.input')
 
 # =======================================
 # =======================================
