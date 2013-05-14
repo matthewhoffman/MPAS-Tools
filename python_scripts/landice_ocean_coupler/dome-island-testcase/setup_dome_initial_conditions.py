@@ -58,8 +58,8 @@ except:
 
 # Assign variable values for dome
 # Define dome dimensions - all in meters
-r0 = 200000.0 * sqrt(0.125)
-h0 = 5000.0 * sqrt(0.125)
+r0 = 325000.0 * sqrt(0.125)
+h0 = 3250.0 * sqrt(0.125)
 #x0 = 30000.0
 #y0 = 30000.0
 x0 = xCell.min() + 0.5 * (xCell.max() - xCell.min() )
