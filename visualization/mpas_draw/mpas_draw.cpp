@@ -1238,12 +1238,14 @@ void rescale_cells_and_vertices(){/*{{{*/
 	int i;
 	int cell, vertex;
 	double norm;
-	xyz_min[0] = r8vec_min ( ncells, xcell, missing_value);
-	xyz_max[0] = r8vec_max ( ncells, xcell, missing_value);
-	xyz_min[1] = r8vec_min ( ncells, ycell, missing_value);
-	xyz_max[1] = r8vec_max ( ncells, ycell, missing_value);
-	xyz_min[2] = r8vec_min ( ncells, zcell, missing_value);
-	xyz_max[2] = r8vec_max ( ncells, zcell, missing_value);
+
+	// Compute range using the min/max of cells and vertices. Depending on which has a bigger range.
+	xyz_min[0] = min( r8vec_min ( ncells, xcell, missing_value), r8vec_min ( nvertices, xvertex, missing_value) );
+	xyz_max[0] = max( r8vec_max ( ncells, xcell, missing_value), r8vec_max ( nvertices, xvertex, missing_value) );
+	xyz_min[1] = min( r8vec_min ( ncells, ycell, missing_value), r8vec_min ( nvertices, yvertex, missing_value) );
+	xyz_max[1] = max( r8vec_max ( ncells, ycell, missing_value), r8vec_max ( nvertices, yvertex, missing_value) );
+	xyz_min[2] = min( r8vec_min ( ncells, zcell, missing_value), r8vec_min ( nvertices, zvertex, missing_value) );
+	xyz_max[2] = max( r8vec_max ( ncells, zcell, missing_value), r8vec_max ( nvertices, zvertex, missing_value) );
 
 	xyz_range[0] = xyz_max[0] - xyz_min[0];
 	xyz_range[1] = xyz_max[1] - xyz_min[1];
@@ -1286,49 +1288,6 @@ void rescale_cells_and_vertices(){/*{{{*/
 		ycell[cell] = (ycell[cell] - xyz_center[1]) / norm;
 		zcell[cell] = (zcell[cell] - xyz_center[2]) / norm;
 	}
-/*
-	// Do Vertices
-	xyz_min[0] = r8vec_min ( nvertices, xvertex, missing_value);
-	xyz_max[0] = r8vec_max ( nvertices, xvertex, missing_value);
-	xyz_min[1] = r8vec_min ( nvertices, yvertex, missing_value);
-	xyz_max[1] = r8vec_max ( nvertices, yvertex, missing_value);
-	xyz_min[2] = r8vec_min ( nvertices, zvertex, missing_value);
-	xyz_max[2] = r8vec_max ( nvertices, zvertex, missing_value);
-
-	xyz_range[0] = xyz_max[0] - xyz_min[0];
-	xyz_range[1] = xyz_max[1] - xyz_min[1];
-	xyz_range[2] = xyz_max[2] - xyz_min[2];
-
-	if ( xyz_range[0] == 0.0 ){
-		cout << "\n";
-		cout << "rescale_cells_and_vertices(): - Fatal error!\n";
-		cout << "  The X data range is 0.\n";
-		exit ( 1 );
-	}
-
-	if ( xyz_range[1] == 0.0 ){
-		cout << "\n";
-		cout << "rescale_cells_and_vertices(): - Fatal error!\n";
-		cout << "  The Y data range is 0.\n";
-		exit ( 1 );
-	}
-
-	if(on_sphere){
-		if ( xyz_range[2] == 0.0 ){
-			cout << "\n";
-			cout << "rescale_cells_and_vertices(): - Fatal error!\n";
-			cout << "  The Z data range is 0.\n";
-			exit ( 1 );
-		}
-	}
-
-	xyz_scale = 0.0;
-	for (i = 0; i < 3; i++ )
-	{
-		xyz_center[i] = ( xyz_min[i] + xyz_max[i] ) / 2.0;
-		xyz_scale = std::max ( xyz_scale, ( xyz_max[i] - xyz_min[i] ) / 2.0 );
-	}
-	*/
 
 	for ( vertex = 0; vertex < nvertices; vertex++ )
 	{
