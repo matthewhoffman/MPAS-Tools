@@ -83,7 +83,7 @@ double sphere_radius;
 int color_bar = 0;
 double missing_value = -1e34;
 
-double line_factor = 1.008;
+double line_factor = 1.004;
 double region_line_factor = 1.01;
 double region_center_factor = 1.013;
 double range_factor = 0.80;
@@ -806,7 +806,7 @@ void build_connectivity(){/*{{{*/
 		distance2 = sqrt( max( pow(ycell[c1] - ycell[c2], 2), max( pow(ycell[c2] - ycell[c3], 2), pow(ycell[c3] - ycell[c1], 2))));
 		distance3 = sqrt( max( pow(zcell[c1] - zcell[c2], 2), max( pow(zcell[c2] - zcell[c3], 2), pow(zcell[c3] - zcell[c1], 2))));
 
-		if(distance1 > xcell_range/2.0 || distance2 > ycell_range/2.0 || distance3 > zcell_range/2.0){
+		if(distance1 > xcell_range * 0.6 || distance2 > ycell_range * 0.6 || distance3 > zcell_range * 0.6 ){
 			keep_shape = false;
 		}
 
@@ -886,45 +886,63 @@ void build_connectivity(){/*{{{*/
 			v1 = verticesoncell[i*maxedges + j%nedgesoncell[i]];
 			v2 = verticesoncell[i*maxedges + (j+1)%nedgesoncell[i]];
 
+			dc = -1;
+			if(v1 != -1){
+				dc = v1;
+			} else if (v2 != -1){
+				dc = v2;
+			}
+
+			if(v1 == -1 && dc != -1){
+				v1 = dc;
+			}
+
+			if(v2 == -1 && dc != -1){
+				v2 = dc;
+			}
+
 			keep_shape = true;
 
 			distance1 = sqrt(max( pow(xvertex[v1] - xvertex[v2], 2), max( pow(xvertex[v1] - xcell[i], 2), pow(xvertex[v2] - xcell[i], 2))));
 			distance2 = sqrt(max( pow(yvertex[v1] - yvertex[v2], 2), max( pow(yvertex[v1] - ycell[i], 2), pow(yvertex[v2] - ycell[i], 2))));
 			distance3 = sqrt(max( pow(zvertex[v1] - zvertex[v2], 2), max( pow(zvertex[v1] - zcell[i], 2), pow(zvertex[v2] - zcell[i], 2))));
 
-			if(distance1 > xvertex_range/2.0 || distance2 > yvertex_range/2.0 || distance3 > zvertex_range/2.0){
+			if(distance1 > xvertex_range  * 0.6|| distance2 > yvertex_range * 0.6 || distance3 > zvertex_range * 0.6){
 				keep_shape = false;
 			}
 
 			if(keep_shape || on_sphere){
-				cell_cells.push_back(xcell[i]);
-				cell_cells.push_back(ycell[i]);
-				cell_cells.push_back(zcell[i]);
-				cell_cells.push_back(xvertex[v1]);
-				cell_cells.push_back(yvertex[v1]);
-				cell_cells.push_back(zvertex[v1]);
-				cell_cells.push_back(xvertex[v2]);
-				cell_cells.push_back(yvertex[v2]);
-				cell_cells.push_back(zvertex[v2]);
+				if(dc != -1){
+					cell_cells.push_back(xcell[i]);
+					cell_cells.push_back(ycell[i]);
+					cell_cells.push_back(zcell[i]);
+					cell_cells.push_back(xvertex[v1]);
+					cell_cells.push_back(yvertex[v1]);
+					cell_cells.push_back(zvertex[v1]);
+					cell_cells.push_back(xvertex[v2]);
+					cell_cells.push_back(yvertex[v2]);
+					cell_cells.push_back(zvertex[v2]);
 
-				if(on_sphere){
-					cell_lines.push_back(xvertex[v1]*line_factor);
-					cell_lines.push_back(yvertex[v1]*line_factor);
-					cell_lines.push_back(zvertex[v1]*line_factor);
+					if(on_sphere){
+						cell_lines.push_back(xvertex[v1]*line_factor);
+						cell_lines.push_back(yvertex[v1]*line_factor);
+						cell_lines.push_back(zvertex[v1]*line_factor);
 
-					cell_lines.push_back(xvertex[v2]*line_factor);
-					cell_lines.push_back(yvertex[v2]*line_factor);
-					cell_lines.push_back(zvertex[v2]*line_factor);
-				} else {
-					cell_lines.push_back(xvertex[v1]);
-					cell_lines.push_back(yvertex[v1]);
-					cell_lines.push_back(line_factor);
+						cell_lines.push_back(xvertex[v2]*line_factor);
+						cell_lines.push_back(yvertex[v2]*line_factor);
+						cell_lines.push_back(zvertex[v2]*line_factor);
+					} else {
+						cell_lines.push_back(xvertex[v1]);
+						cell_lines.push_back(yvertex[v1]);
+						cell_lines.push_back(line_factor);
 
-					cell_lines.push_back(xvertex[v2]);
-					cell_lines.push_back(yvertex[v2]);
-					cell_lines.push_back(line_factor);
+						cell_lines.push_back(xvertex[v2]);
+						cell_lines.push_back(yvertex[v2]);
+						cell_lines.push_back(line_factor);
+					}
 				}
 			} else {
+//			/*
 				cell_cells.push_back(0.0);
 				cell_cells.push_back(0.0);
 				cell_cells.push_back(0.0);
@@ -934,6 +952,7 @@ void build_connectivity(){/*{{{*/
 				cell_cells.push_back(0.0);
 				cell_cells.push_back(0.0);
 				cell_cells.push_back(0.0);
+//				*/
 			}
 		}
 	}
@@ -986,105 +1005,108 @@ void build_connectivity(){/*{{{*/
 			distance3 = max(distance3, pow(zcell[c1] - zvertex[v2], 2));
 		}
 
-		if(distance1 > xvertex_range/2.0 || distance2 > yvertex_range/2.0 || distance3 > zvertex_range/2.0){
+		if(distance1 > xvertex_range * 0.6 || distance2 > yvertex_range * 0.6 || distance3 > zvertex_range * 0.6){
 			keep_shape = false;
 		}
 
 		if(keep_shape || on_sphere){ 
-			edge_cells.push_back(xcell[c1]);	
-			edge_cells.push_back(ycell[c1]);	
-			edge_cells.push_back(zcell[c1]);	
+			if(c1 >= 0 && v1 >= 0 && v2 >=0){
+				edge_cells.push_back(xcell[c1]);	
+				edge_cells.push_back(ycell[c1]);	
+				edge_cells.push_back(zcell[c1]);	
 
-			edge_cells.push_back(xvertex[v1]);
-			edge_cells.push_back(yvertex[v1]);
-			edge_cells.push_back(zvertex[v1]);
+				edge_cells.push_back(xvertex[v1]);
+				edge_cells.push_back(yvertex[v1]);
+				edge_cells.push_back(zvertex[v1]);
 
-			edge_cells.push_back(xvertex[v2]);
-			edge_cells.push_back(yvertex[v2]);
-			edge_cells.push_back(zvertex[v2]);
+				edge_cells.push_back(xvertex[v2]);
+				edge_cells.push_back(yvertex[v2]);
+				edge_cells.push_back(zvertex[v2]);
 
-			edge_cells.push_back(xcell[c2]);	
-			edge_cells.push_back(ycell[c2]);	
-			edge_cells.push_back(zcell[c2]);	
+				edge_cells.push_back(xcell[c2]);	
+				edge_cells.push_back(ycell[c2]);	
+				edge_cells.push_back(zcell[c2]);	
 
-			edge_cells.push_back(xvertex[v2]);
-			edge_cells.push_back(yvertex[v2]);
-			edge_cells.push_back(zvertex[v2]);
+				edge_cells.push_back(xvertex[v2]);
+				edge_cells.push_back(yvertex[v2]);
+				edge_cells.push_back(zvertex[v2]);
 
-			edge_cells.push_back(xvertex[v1]);
-			edge_cells.push_back(yvertex[v1]);
-			edge_cells.push_back(zvertex[v1]);
+				edge_cells.push_back(xvertex[v1]);
+				edge_cells.push_back(yvertex[v1]);
+				edge_cells.push_back(zvertex[v1]);
 
-			if(on_sphere){
-				edge_lines.push_back(xcell[c1]*line_factor);
-				edge_lines.push_back(ycell[c1]*line_factor);
-				edge_lines.push_back(zcell[c1]*line_factor);
-				edge_lines.push_back(xvertex[v1]*line_factor);
-				edge_lines.push_back(yvertex[v1]*line_factor);
-				edge_lines.push_back(zvertex[v1]*line_factor);
+				if(on_sphere){
+					edge_lines.push_back(xcell[c1]*line_factor);
+					edge_lines.push_back(ycell[c1]*line_factor);
+					edge_lines.push_back(zcell[c1]*line_factor);
+					edge_lines.push_back(xvertex[v1]*line_factor);
+					edge_lines.push_back(yvertex[v1]*line_factor);
+					edge_lines.push_back(zvertex[v1]*line_factor);
 
-				edge_lines.push_back(xvertex[v1]*line_factor);
-				edge_lines.push_back(yvertex[v1]*line_factor);
-				edge_lines.push_back(zvertex[v1]*line_factor);
-				if(c1 == c2){
+					edge_lines.push_back(xvertex[v1]*line_factor);
+					edge_lines.push_back(yvertex[v1]*line_factor);
+					edge_lines.push_back(zvertex[v1]*line_factor);
+					if(c1 == c2){
+						edge_lines.push_back(xvertex[v2]*line_factor);
+						edge_lines.push_back(yvertex[v2]*line_factor);
+						edge_lines.push_back(zvertex[v2]*line_factor);
+					} else {
+						edge_lines.push_back(xcell[c2]*line_factor);
+						edge_lines.push_back(ycell[c2]*line_factor);
+						edge_lines.push_back(zcell[c2]*line_factor);
+
+						edge_lines.push_back(xcell[c2]*line_factor);
+						edge_lines.push_back(ycell[c2]*line_factor);
+						edge_lines.push_back(zcell[c2]*line_factor);
+						edge_lines.push_back(xvertex[v2]*line_factor);
+						edge_lines.push_back(yvertex[v2]*line_factor);
+						edge_lines.push_back(zvertex[v2]*line_factor);
+					}
+
 					edge_lines.push_back(xvertex[v2]*line_factor);
 					edge_lines.push_back(yvertex[v2]*line_factor);
 					edge_lines.push_back(zvertex[v2]*line_factor);
+					edge_lines.push_back(xcell[c1]*line_factor);
+					edge_lines.push_back(ycell[c1]*line_factor);
+					edge_lines.push_back(zcell[c1]*line_factor);
 				} else {
-					edge_lines.push_back(xcell[c2]*line_factor);
-					edge_lines.push_back(ycell[c2]*line_factor);
-					edge_lines.push_back(zcell[c2]*line_factor);
+					edge_lines.push_back(xcell[c1]);
+					edge_lines.push_back(ycell[c1]);
+					edge_lines.push_back(line_factor);
+					edge_lines.push_back(xvertex[v1]);
+					edge_lines.push_back(yvertex[v1]);
+					edge_lines.push_back(line_factor);
 
-					edge_lines.push_back(xcell[c2]*line_factor);
-					edge_lines.push_back(ycell[c2]*line_factor);
-					edge_lines.push_back(zcell[c2]*line_factor);
-					edge_lines.push_back(xvertex[v2]*line_factor);
-					edge_lines.push_back(yvertex[v2]*line_factor);
-					edge_lines.push_back(zvertex[v2]*line_factor);
-				}
+					edge_lines.push_back(xvertex[v1]);
+					edge_lines.push_back(yvertex[v1]);
+					edge_lines.push_back(line_factor);
+					if(c1 == c2){
+						edge_lines.push_back(xvertex[v2]);
+						edge_lines.push_back(yvertex[v2]);
+						edge_lines.push_back(line_factor);
+					} else {
+						edge_lines.push_back(xcell[c2]);
+						edge_lines.push_back(ycell[c2]);
+						edge_lines.push_back(line_factor);
 
-				edge_lines.push_back(xvertex[v2]*line_factor);
-				edge_lines.push_back(yvertex[v2]*line_factor);
-				edge_lines.push_back(zvertex[v2]*line_factor);
-				edge_lines.push_back(xcell[c1]*line_factor);
-				edge_lines.push_back(ycell[c1]*line_factor);
-				edge_lines.push_back(zcell[c1]*line_factor);
-			} else {
-				edge_lines.push_back(xcell[c1]);
-				edge_lines.push_back(ycell[c1]);
-				edge_lines.push_back(line_factor);
-				edge_lines.push_back(xvertex[v1]);
-				edge_lines.push_back(yvertex[v1]);
-				edge_lines.push_back(line_factor);
+						edge_lines.push_back(xcell[c2]);
+						edge_lines.push_back(ycell[c2]);
+						edge_lines.push_back(line_factor);
+						edge_lines.push_back(xvertex[v2]);
+						edge_lines.push_back(yvertex[v2]);
+						edge_lines.push_back(line_factor);
+					}
 
-				edge_lines.push_back(xvertex[v1]);
-				edge_lines.push_back(yvertex[v1]);
-				edge_lines.push_back(line_factor);
-				if(c1 == c2){
 					edge_lines.push_back(xvertex[v2]);
 					edge_lines.push_back(yvertex[v2]);
 					edge_lines.push_back(line_factor);
-				} else {
-					edge_lines.push_back(xcell[c2]);
-					edge_lines.push_back(ycell[c2]);
-					edge_lines.push_back(line_factor);
-
-					edge_lines.push_back(xcell[c2]);
-					edge_lines.push_back(ycell[c2]);
-					edge_lines.push_back(line_factor);
-					edge_lines.push_back(xvertex[v2]);
-					edge_lines.push_back(yvertex[v2]);
+					edge_lines.push_back(xcell[c1]);
+					edge_lines.push_back(ycell[c1]);
 					edge_lines.push_back(line_factor);
 				}
-
-				edge_lines.push_back(xvertex[v2]);
-				edge_lines.push_back(yvertex[v2]);
-				edge_lines.push_back(line_factor);
-				edge_lines.push_back(xcell[c1]);
-				edge_lines.push_back(ycell[c1]);
-				edge_lines.push_back(line_factor);
 			}
 		} else {
+		/*
 			edge_cells.push_back(0.0);
 			edge_cells.push_back(0.0);
 			edge_cells.push_back(0.0);
@@ -1108,6 +1130,7 @@ void build_connectivity(){/*{{{*/
 			edge_cells.push_back(0.0);
 			edge_cells.push_back(0.0);
 			edge_cells.push_back(0.0);
+			*/
 		}
 	}
 

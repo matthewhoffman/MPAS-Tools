@@ -818,7 +818,7 @@ int netcdf_mpas_list_ncell_fields(string filename){/*{{{*/
 	excluded_vars.push_back("zCell");
 	excluded_vars.push_back("latCell");
 	excluded_vars.push_back("lonCell");
-	excluded_vars.push_back("indexToCellID");
+//	excluded_vars.push_back("indexToCellID");
 	excluded_vars.push_back("edgesOnCell");
 	excluded_vars.push_back("cellsOnCell");
 	excluded_vars.push_back("localVerticalUnitVectors");
@@ -966,7 +966,7 @@ int netcdf_mpas_list_nvertex_fields(string filename){/*{{{*/
 	excluded_vars.push_back("zVertex");
 	excluded_vars.push_back("latVertex");
 	excluded_vars.push_back("lonVertex");
-	excluded_vars.push_back("indexToVertexID");
+//	excluded_vars.push_back("indexToVertexID");
 	excluded_vars.push_back("edgesOnVertex");
 	excluded_vars.push_back("cellsOnVertex");
 	excluded_vars.push_back("kiteAreasOnVertex");
@@ -1116,7 +1116,7 @@ int netcdf_mpas_list_nedge_fields(string filename){/*{{{*/
 	excluded_vars.push_back("zEdge");
 	excluded_vars.push_back("latEdge");
 	excluded_vars.push_back("lonEdge");
-	excluded_vars.push_back("indexToEdgeID");
+//	excluded_vars.push_back("indexToEdgeID");
 	excluded_vars.push_back("cellsOnEdge");
 	excluded_vars.push_back("edgesOnEdge");
 	excluded_vars.push_back("edgeNormalVectors");
