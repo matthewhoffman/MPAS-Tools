@@ -435,13 +435,13 @@ def write_namelist_sections(latex, sorted_opts, forward_registry, analysis_regis
 			latex.write('\label{sec:nm_sec_%s}\n'%opt_name)
 			latex.write('\\begin{center}\n')
 			latex.write('\\begin{longtable}{| p{2.0in} || p{4.0in} |}\n')
-			latex.write('    \hline\n')
-			latex.write('    In build modes: & ')
-			if(in_forward):
-				latex.write('\hyperref[subsec:forward_nm_tab_%s]{forward} '%(forward_rec_name))
-			if(in_analysis):
-				latex.write('\hyperref[subsec:analysis_nm_tab_%s]{analysis} '%(analysis_rec_name))
-			latex.write('\\\\\n')
+			#latex.write('    \hline\n')
+			#latex.write('    In build modes: & ')
+			#if(in_forward):
+			#	latex.write('\hyperref[subsec:forward_nm_tab_%s]{forward} '%(forward_rec_name))
+			#if(in_analysis):
+			#	latex.write('\hyperref[subsec:analysis_nm_tab_%s]{analysis} '%(analysis_rec_name))
+			#latex.write('\\\\\n')
 
 			latex.write('    \hline\n')
 			latex.write('    Type: & %s \\\\\n'%opt_type.replace('_','\_'))
@@ -864,13 +864,13 @@ def write_variable_sections(latex, sorted_structs, forward_registry, analysis_re
 				# Tabular Format:
 				latex.write('\\begin{center}\n')
 				latex.write('\\begin{longtable}{| p{2.0in} | p{4.0in} |}\n')
-				latex.write('        \hline \n')
-				latex.write('        In build modes: & ')
-				if(in_forward):
-					latex.write('\hyperref[subsec:forward_var_tab_%s]{forward} '%(struct))
-				if(in_analysis):
-					latex.write('\hyperref[subsec:analysis_var_tab_%s]{analysis} '%(struct))
-				latex.write('\\\\\n')
+				#latex.write('        \hline \n')
+				#latex.write('        In build modes: & ')
+				#if(in_forward):
+				#	latex.write('\hyperref[subsec:forward_var_tab_%s]{forward} '%(struct))
+				#if(in_analysis):
+				#	latex.write('\hyperref[subsec:analysis_var_tab_%s]{analysis} '%(struct))
+				#latex.write('\\\\\n')
 				latex.write('        \hline \n')
 				latex.write('        Type: & %s \\\\\n'%var_type)
 				latex.write('        \hline \n')
@@ -883,11 +883,12 @@ def write_variable_sections(latex, sorted_structs, forward_registry, analysis_re
 				latex.write('        Number of time levels: & %s \\\\\n'%var_time_levels)
 				latex.write('        \hline \n')
 				if(in_forward and not forward_streams == ""):
-					latex.write('		 Forward mode streams: & %s \\\\\n'%forward_streams)
+					#latex.write('		 Forward mode streams: & %s \\\\\n'%forward_streams)
+					latex.write('		 In streams: & %s \\\\\n'%forward_streams)
 					latex.write('        \hline \n')
-				if(in_analysis and not analysis_streams == ""):
-					latex.write('		 Analysis mode streams: & %s \\\\\n'%analysis_streams)
-					latex.write('        \hline \n')
+				#if(in_analysis and not analysis_streams == ""):
+				#	latex.write('		 Analysis mode streams: & %s \\\\\n'%analysis_streams)
+				#	latex.write('        \hline \n')
 
 				if(in_var_array):
 					latex.write("		 Index in %s Array: & '%s' in '%s' pool \\\\\n"%(var_name.replace('_','\_'), var_name.replace('_', '\_'), struct_name.replace('_','\_')))
