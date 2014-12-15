@@ -26,11 +26,11 @@ projAIS_BEDMAP2_no_geoid = pyproj.Proj('+proj=stere +lat_ts=-71.0 +lat_0=-90 +lo
 #infile = 'grid.1000.mpas.nc'
 
 infile = '../culled_mesh.nc'
-
+infile='grid.12556.nc.mpas'
 
 #outfilePrefix = 'grid.1000.mpas.plane.'
 projOut = projAIS_BEDMAP2_no_geoid
-saveLatMax = -00.0
+saveLatMax = -55.0
 saveLatMin = -91.0
 
 ##########################################
@@ -93,18 +93,28 @@ keepVertices = np.nonzero( keepVerticesFullArray == 1 )[0]
 
 # Now need to replace the indices in cellsOnVertex with the new condensed indices.
 cellsOnVertexPrune = cellsOnVertex[keepVertices,:]
-
 for v in range(len(keepVertices)):
     for c in range(3):
         oldindex = cellsOnVertexPrune[v,c]-1  # source info is 1-based, python is 0
-        cellsOnVertexPrune[v,c] = cellIndicesFullToPruned[oldindex]
+        if oldindex in keepCells:
+          cellsOnVertexPrune[v,c] = cellIndicesFullToPruned[oldindex]
+        else:
+          cellsOnVertexPrune[v,c] = -1  # mark this as a degenerate cell location
 
-print cellsOnVertexPrune.max()
-print cellIndicesFullToPruned.max()
+#print cellsOnVertexPrune.max()
+#print cellIndicesFullToPruned.max()
  
-print cellsOnVertex[keepVertices,:]
+#print cellsOnVertex[keepVertices,:]
 #print keepVertices
 #print len(keepVertices), len(keepCells)
+
+# Now deal with degenerate triangles
+for v in range(len(keepVertices)):
+    for c in range(3):
+        if cellsOnVertexPrune[v,c] == -1:
+            print 'ERROR: degenerate triangle found!  There should not be any anymore!'
+#            cellsOnVertexPrune[v,c] = cellsOnVertexPrune[v,:].max()  # assign the maximum cell value on this vertex here to get somthing valid
+
 
 # ============================================
 # ============================================
@@ -158,7 +168,7 @@ print cellsOnVertex[keepVertices,:]
 
 np.savetxt('end_points.dat', np.column_stack( (xOut, yOut, np.zeros((len(xOut),))) ), delimiter=' ')  #, header='x, y, z'  , fmt='%.8f'
 
-np.savetxt('triangles.dat', cellsOnVertex[keepVertices,:], delimiter=' ', fmt='%i')  #, header='x, y, z')
+np.savetxt('triangles.dat', cellsOnVertexPrune-1, delimiter=' ', fmt='%i')  #, header='x, y, z')
 
 np.savetxt('point_density.dat', meshDensity[keepCells], delimiter=' ')  #, header='x, y, z')
 
