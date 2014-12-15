@@ -96,13 +96,13 @@ double projUpDown = 0.0;
 double projLeftRight = 0.0;
 double projDistance	= 3.0;
 double projTwist		= 0.0;
-double projElevation	= 0.0;
+double projElevation	= 90.0;
 double projAzimuth		= 0.0;
 
 bool single_ss = false;
 int loop_it = 0;
 static GLfloat theta[3] = { 0.0, 0.0, 0.0 };
-double theta_speed = 0.020;
+double theta_speed = 0.040;
 
 int ntime;
 int nvertlevels;
