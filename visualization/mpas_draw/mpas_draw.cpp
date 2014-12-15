@@ -47,6 +47,8 @@ void draw_edge_lines();
 void build_regions();
 void draw_regions();
 
+void draw_cellPoints();
+
 void color_mesh();
 void color_cells();
 void color_triangles();
@@ -149,6 +151,7 @@ vector<GLfloat> edge_colors;
 vector< vector<double> > ranges; // 0 - min, 1 - max
 vector<double> hard_ranges;
 
+vector<GLfloat> cell_centers;
 vector<GLfloat> region_centers;
 vector<GLfloat> region_lines;
 vector<double> region_radii;
@@ -156,6 +159,7 @@ vector<GLfloat> region_angles;
 bool regions_built = false;
 bool region_draw = false;
 int region_line_div = 180;
+bool cellPoints_draw = false;
 
 double xyz_center[3];
 double xyz_max[3];
@@ -352,6 +356,14 @@ void display ( ){/*{{{*/
 	switch(region_draw){
 		case true:
 			draw_regions();
+			break;
+		default:
+			break;
+	}
+
+	switch(cellPoints_draw){
+		case true:
+			draw_cellPoints();
 			break;
 		default:
 			break;
@@ -1304,12 +1316,17 @@ void rescale_cells_and_vertices(){/*{{{*/
 		xyz_scale = std::max ( xyz_scale, ( xyz_max[i] - xyz_min[i] ) / 2.0 );
 	}
 
+	cell_centers.clear();
 	for ( cell = 0; cell < ncells; cell++ )
 	{
 		norm = xyz_scale;
 		xcell[cell] = (xcell[cell] - xyz_center[0]) / norm;
 		ycell[cell] = (ycell[cell] - xyz_center[1]) / norm;
 		zcell[cell] = (zcell[cell] - xyz_center[2]) / norm;
+
+		cell_centers.push_back(xcell[cell]);
+		cell_centers.push_back(ycell[cell]);
+		cell_centers.push_back(zcell[cell]);
 	}
 
 	for ( vertex = 0; vertex < nvertices; vertex++ )
@@ -1587,6 +1604,16 @@ void draw_regions(){/*{{{*/
 	glColor3f( REG_R, REG_G, REG_B );
 	glVertexPointer( 3, GL_FLOAT, 0, &region_centers[0] );
 	glDrawArrays( GL_POINTS, 0, region_centers.size()/3.0 );
+
+	glEnableClientState( GL_COLOR_ARRAY );
+}/*}}}*/
+
+void draw_cellPoints(){/*{{{*/
+	glDisableClientState( GL_COLOR_ARRAY );
+
+	glColor3f( REG_R, REG_G, REG_B );
+	glVertexPointer( 3, GL_FLOAT, 0, &cell_centers[0] );
+	glDrawArrays( GL_POINTS, 0, cell_centers.size()/3.0 );
 
 	glEnableClientState( GL_COLOR_ARRAY );
 }/*}}}*/
@@ -2079,6 +2106,9 @@ void keyPressed( unsigned char key, int x, int y ) {/*{{{*/
 			break;
 		case KEY_c:
 			drawing = ( drawing + 1 ) % 3;
+			break;
+		case KEY_p:
+			cellPoints_draw = !cellPoints_draw;
 			break;
 		case KEY_COMMA:
 			projDistance += 0.05;
