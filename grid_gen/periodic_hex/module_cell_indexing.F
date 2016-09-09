@@ -7,6 +7,7 @@ module cell_indexing
    integer :: nx, ny, nVertLevels, nTracers, vertexDegree
    real (kind=8) :: dc
    integer, dimension(20) :: nproc
+   logical :: periodic_x, periodic_y
 
 
    contains
@@ -16,7 +17,7 @@ module cell_indexing
 
       implicit none
 
-      namelist /periodic_grid/ nx, ny, dc, nVertLevels, nTracers, nproc, vertexDegree
+      namelist /periodic_grid/ nx, ny, dc, nVertLevels, nTracers, nproc, vertexDegree, periodic_x, periodic_y
 
       nx = 200
       ny = 200
@@ -25,13 +26,15 @@ module cell_indexing
       nTracers = 2
       nproc(:) = -1
       vertexDegree = 3
+      periodic_x = .true.
+      periodic_y = .true.
 
       open(20,file='namelist.input',status='old')
       read(20,periodic_grid)
       close(20)
 
-      if (mod(ny, 2) /= 0) then
-         print *, "Error: ny must be divisible by 2 for the grid's periodicity to work properly."
+      if (periodic_y .and. mod(ny, 2) /= 0) then
+         print *, "Error: ny must be divisible by 2 for the grid's y-periodicity to work properly."
          print *, "Please adjust ny in your namelist file and rerun the program."
          call exit()
       endif
@@ -58,7 +61,11 @@ module cell_indexing
 
       integer, intent(in) :: iCol, iRow
 
-      cellIdx = (iRow-1)*nx + iCol
+      if (iCol==0 .or. iCol>nx .or. iRow==0 .or. iRow>ny) then
+         cellIdx = 0
+      else
+         cellIdx = (iRow-1)*nx + iCol
+      endif
 
    end function cellIdx
 
@@ -72,13 +79,16 @@ module cell_indexing
       integer :: mx, px, my, py
 
       mx = iCol - 1
-      if (mx == 0) mx = nx
+      if (mx == 0 .and. periodic_x) mx = nx
+
       my = iRow - 1
-      if (my == 0) my = ny
+      if (my == 0 .and. periodic_y) my = ny
+
       px = iCol + 1
-      if (px == nx + 1) px = 1
+      if (px == nx + 1 .and. periodic_x) px = 1
+
       py = iRow + 1
-      if (py == ny + 1) py = 1
+      if (py == ny + 1 .and. periodic_y) py = 1
 
       if (mod(iRow,2) == 1) then
          if (neighborNumber == 1) then

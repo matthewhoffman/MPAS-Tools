@@ -33,6 +33,7 @@ program hexagonal_periodic_grid
    integer :: nprocx, nprocy
    real (kind=8) :: r
    character (len=32) :: decomp_fname
+   integer :: cnt
 
    call cell_indexing_read_nl()
 
@@ -105,6 +106,17 @@ program hexagonal_periodic_grid
          edgesOnCell(j,iCell) = edgeOnCell(iCell,j)
          verticesOnCell(j,iCell) = vertexOnCell(iCell,j)
       end do
+      ! push zeroes to end of array
+      cnt = 0  ! count of nonzero elements
+      do j=1,maxEdges
+         if (cellsOnCell(j,iCell) /= 0) then
+             cnt = cnt + 1
+             cellsOnCell(cnt,iCell) = cellsOnCell(j,iCell)
+         endif
+      end do
+      cellsOnCell(cnt+1:maxEdges,iCell) = 0
+      !nEdgesOnCell(iCell) = cnt
+
       do j=1,3
          cellsOnEdge(2,edgesOnCell(j,iCell)) = iCell     ! Edges owned by this cell
       end do
