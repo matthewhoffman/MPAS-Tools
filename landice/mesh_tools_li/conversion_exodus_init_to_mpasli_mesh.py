@@ -42,9 +42,9 @@ options, args = parser.parse_args()
 SEACAS_path = os.getenv('SEACAS')
 if SEACAS_path == None:
    #sys.path.append('/home/tzhang/Apps/seacas/lib')
-   #sys.path.append('/Users/trevorhillebrand/Documents/mpas/seacas/lib/')
+   sys.path.append('/Users/trevorhillebrand/Documents/mpas/seacas/lib/')
    #sys.path.append('/Users/mhoffman/software/seacas/install/lib')
-   sys.path.append('/usr/projects/climate/SHARED_CLIMATE/software/badger/trilinos/2018-12-19/gcc-6.4.0/openmpi-2.1.2/lib')  # path on LANL Badger/Grizzly
+   #sys.path.append('/usr/projects/climate/SHARED_CLIMATE/software/badger/trilinos/2018-12-19/gcc-6.4.0/openmpi-2.1.2/lib')  # path on LANL Badger/Grizzly
 else:
    sys.path.append(SEACAS_path+'/lib')
 
@@ -99,7 +99,17 @@ if mpas_layer_thick.any() != exo_layer_thick.any():
 
 if (options.conversion_method == 'coord'):
    print("use coordinate method")
-   x_exo_layer = x_exo[nVert_albany::layer_num]
+   if ordering == 1.0:
+        layer_num = int(stride)
+        x_exo_layer = x_exo[0::layer_num]
+        y_exo_layer = y_exo[0::layer_num]
+   elif ordering == 0.0:
+        node_num = int(stride)
+        x_exo_layer = x_exo[0:node_num+1]
+        y_exo_layer = y_exo[0:node_num+1]
+   else:
+        sys.exit("Invalid ordering in Exodus file.  Ordering must be 0 or 1.")
+
    node_num_layer = len(x_exo_layer)
    cellID_array = np.zeros((node_num_layer,), dtype=np.int32)
    for i in range(node_num_layer):
@@ -109,7 +119,7 @@ if (options.conversion_method == 'coord'):
        index = index_intersect[0]
        cellID_array[i] = index + 1 # convert to Fortran indexing
    # save id map so it could be used subsequently for convenience
-   np.savetxt('exodus_to_mpas_id_map.txt', np.concatenate( (np.array([node_num_layer]), usefulCellID_array)), fmt=str("%i"))
+   np.savetxt('exodus_to_mpas_id_map.txt', np.concatenate( (np.array([node_num_layer]), cellID_array)), fmt=str("%i"))
    print('Coordinate IDs written to "exodus_to_mpas_id_map.txt".  You can use this file with "id" conversion method.')
 elif (options.conversion_method == 'id'):
    # Read cellID_array from ascii file
