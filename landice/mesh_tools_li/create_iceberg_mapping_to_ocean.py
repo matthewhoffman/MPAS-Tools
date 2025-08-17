@@ -2,30 +2,38 @@
 
 # TODO: 
 # introduce Ocean mask to exclude ice shelves
-# change from conservative to bilinear mapping for melt->ocn and then manually renormalize
 # fix 180 longitude seam
+# adjust normalization for region area
 
 
 import argparse
 import numpy as np
 import os
+import subprocess
+import sys
 import xarray as xr
 from pyremap.descriptor.lat_lon_grid_descriptor import LatLonGridDescriptor
 from pyremap.descriptor.mpas_mesh_descriptor import MpasMeshDescriptor
 from pyremap.remapper import Remapper
 
 def create_scrip_from_latlon(input_file, lat_var='latitude', lon_var='longitude'):
+    fname = os.path.basename(input_file)
+    fprefix = os.path.splitext(fname)[0]
     grid = LatLonGridDescriptor.read(input_file, latVarName=lat_var, lonVarName=lon_var)
-    #scrip_filename = f"{os.path.splitext(input_file)[0]}_scrip.nc"
-    #grid.to_scrip(scrip_filename)
-    return grid
+    # create the scrip file in the run dir
+    scrip_filename = f"{fprefix}_scrip.nc"
+    grid.to_scrip(scrip_filename)
+    return grid, scrip_filename
 
 def create_scrip_from_mpas(mesh_file):
-    prefix = os.path.splitext(mesh_file)[0]
-    mesh = MpasMeshDescriptor(mesh_file, meshName=prefix)
-    #scrip_filename = f"{prefix}_scrip.nc"
-    #mesh.to_scrip(scrip_filename)
-    return mesh
+    fname = os.path.basename(mesh_file)
+    fprefix = os.path.splitext(fname)[0]
+    mesh = MpasMeshDescriptor(mesh_file, meshName=fprefix)
+    # create the scrip file in the run dir
+    scrip_filename = f"{fprefix}_scrip.nc"
+    mesh.to_scrip(scrip_filename)
+    print(f"Saved scrip file {scrip_filename}")
+    return mesh, scrip_filename
 
 def create_mapfile_base(src_scrip, dest_scrip):
     mapfile_base = "map_src_to_dest.nc"
@@ -49,34 +57,69 @@ def remap_files(climatology_file, ocn_mesh_file, glc_mesh_file):
     regions = ds.sizes['region']
 
     # Create scrip files
-    source_scrip = create_scrip_from_latlon(climatology_file)
-    ocn_scrip = create_scrip_from_mpas(ocn_mesh_file)
-    glc_scrip = create_scrip_from_mpas(glc_mesh_file)
+    source_scrip, src_scrip_file  = create_scrip_from_latlon(climatology_file)
+    glc_scrip, glc_scrip_file = create_scrip_from_mpas(glc_mesh_file)
+    ocn_scrip, ocn_scrip_file = create_scrip_from_mpas(ocn_mesh_file)
+
+    # add ice shelf mask to ocn scrip
+    ds_ocn = xr.open_dataset(ocn_mesh_file)
+    imask = (ds_ocn['landIceMask'][0,:].values == 0).astype('i')
+    ds_ocn_scrip = xr.open_dataset(ocn_scrip_file)
+    ds_ocn_scrip['grid_imask'] = (['grid_size',], imask)
+    #ds_ocn_scrip.to_netcdf(ocn_scrip_file, format="NETCDF3_CLASSIC")
+    ds_ocn_scrip.close()
+
+    print(f"Creating melt->ocn mapping")
+    melt_to_ocn_mapping_file = "map_meltgrid_to_ocn_bilinear.nc"
+    # delete file if it exists because Remapper won't clobber
+    if os.path.isfile(melt_to_ocn_mapping_file):
+        os.remove(melt_to_ocn_mapping_file)
+
+    # Build mapping file.  Can't use pyremap because it does 
+    # not support masks in a scrip file as of now
+    cargs = ['ESMF_RegridWeightGen',
+             '--source', src_scrip_file,
+             '--destination', ocn_scrip_file,
+             '--dst_regional',
+             '--weight', melt_to_ocn_mapping_file,
+             '--method', 'bilinear',
+             '--netcdf4']
+    subprocess.check_call(cargs)
 
     # Create melt->ocn map files for each region
     if not args.skip_melt_to_ocn:
+        melt_frac = np.zeros(regions)
         for region_idx in range(regions):
-            print(f"Creating mapping for region {region_idx}...")
-            region_melt = ds['melt'].isel(region=region_idx).mean(dim='time')
+            # melt: The spatial integral on the spherical Earth summed over the 12 months and all regions is equal to 1.0
+            region_melt = ds['melt'].isel(region=region_idx).sum(dim='time')
             region_ds = region_melt.to_dataset(name='melt')
             region_melt_file = f"region_{region_idx}_annual_mean_melt.nc"
             region_ds.to_netcdf(region_melt_file)
+            region_ds.close()
 
-            print("\n  Create mapping file and remap melt->ocn")
-            melt_to_ocn_mapping_file = f"map_region_{region_idx}_to_ocn_conservative.nc"
-            # delete file if it exists because Remapper won't clobber
-            if os.path.isfile(melt_to_ocn_mapping_file):
-                os.remove(melt_to_ocn_mapping_file)
-            remapper = Remapper(
-                sourceDescriptor=source_scrip,
-                destinationDescriptor=ocn_scrip,
-                mappingFileName=melt_to_ocn_mapping_file,
-            )
-            remapper.esmf_build_map(method='conserve')
+            # perform remapping
             region_melt_file_ocn = f"region_{region_idx}_annual_mean_melt_ocn.nc"
-            remapper.remap_file(region_melt_file, region_melt_file_ocn,
-                                variableList=['melt'], overwrite=True,
-                                renormalize=True)
+            cargs = ['ncremap',
+                     '-m', melt_to_ocn_mapping_file,
+                     '-P', 'mpas',
+                     '-v', 'melt',
+                     region_melt_file, region_melt_file_ocn]
+            print(cargs)
+            subprocess.check_call(cargs)
+
+            # renormalize
+            ds_melt_ocn = xr.open_dataset(region_melt_file_ocn)
+            melt = ds_melt_ocn['melt'].values
+            melt_sum = np.nansum(melt * ds_ocn['areaCell'].values)
+            melt_frac[region_idx] = melt_sum
+            #print(f'sum of melt on orig grid={region_ds["melt"].sum().values}, sum of melt on ocn mesh={melt_sum.values}  Renormalizing.')
+            print(f'sum of melt on ocn mesh={melt_sum}  Renormalizing.')
+            melt /= melt_sum
+            print(f'sum of melt on ocn mesh={np.nansum(melt * ds_ocn["areaCell"].values)}')
+            ds_melt_ocn['melt'].data = melt
+            ds_melt_ocn.to_netcdf(region_melt_file_ocn, format="NETCDF3_CLASSIC")
+    ds_ocn.close()
+    print(f'Sum of melt acroos all regions on MPASO mesh before normalization (should be close but not exactly equal to 1.0): {melt_frac.sum()}')
 
     # Create rgn->glc map file
     print("\nCreate mapping file and remap region->glc")
@@ -144,7 +187,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create remapping files for iceberg melt data.")
     parser.add_argument("--ocn_mesh", required=True, help="Path to ocean mesh file.")
     parser.add_argument("--glc_mesh", required=True, help="Path to glacier (ice-sheet) mesh file.")
-    parser.add_argument("--melt_clim", required=True, help="Path to iceberg melt climatology NetCDF file.")
+    parser.add_argument("--melt_clim", required=True, help="Path to iceberg melt climatology NetCDF file. i.e. AQ_iceberg_melt.nc")
     parser.add_argument("--skip_melt_to_ocn", help="if the melt to ocn step should be skipped (assumes has already been run)", action='store_true')
     args = parser.parse_args()
 
