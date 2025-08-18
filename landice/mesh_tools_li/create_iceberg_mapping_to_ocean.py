@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 # TODO: 
-# fix 180 longitude seam
 # adjust normalization for region area
 
 
