@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 # TODO: 
-# introduce Ocean mask to exclude ice shelves
 # fix 180 longitude seam
 # adjust normalization for region area
 
@@ -65,8 +64,10 @@ def remap_files(climatology_file, ocn_mesh_file, glc_mesh_file):
     ds_ocn = xr.open_dataset(ocn_mesh_file)
     imask = (ds_ocn['landIceMask'][0,:].values == 0).astype('i')
     ds_ocn_scrip = xr.open_dataset(ocn_scrip_file)
-    ds_ocn_scrip['grid_imask'] = (['grid_size',], imask)
-    #ds_ocn_scrip.to_netcdf(ocn_scrip_file, format="NETCDF3_CLASSIC")
+    ds_ocn_scrip['grid_imask'].data = imask
+    # Define encoding to suppress _FillValue for all variables
+    encoding = {var: {"_FillValue": None} for var in ds_ocn_scrip.data_vars}
+    ds_ocn_scrip.to_netcdf(ocn_scrip_file+'2', encoding=encoding, format="NETCDF4")
     ds_ocn_scrip.close()
 
     print(f"Creating melt->ocn mapping")
@@ -112,7 +113,6 @@ def remap_files(climatology_file, ocn_mesh_file, glc_mesh_file):
             melt = ds_melt_ocn['melt'].values
             melt_sum = np.nansum(melt * ds_ocn['areaCell'].values)
             melt_frac[region_idx] = melt_sum
-            #print(f'sum of melt on orig grid={region_ds["melt"].sum().values}, sum of melt on ocn mesh={melt_sum.values}  Renormalizing.')
             print(f'sum of melt on ocn mesh={melt_sum}  Renormalizing.')
             melt /= melt_sum
             print(f'sum of melt on ocn mesh={np.nansum(melt * ds_ocn["areaCell"].values)}')
