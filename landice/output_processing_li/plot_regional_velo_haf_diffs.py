@@ -30,6 +30,19 @@ def at_time(da, index=0):
     return da
 
 
+def xtime_ymd(ds, index):
+    """
+    Return the 'YYYY-MM-DD' portion of xtime at the given time index.
+    """
+
+    xtime = ds["xtime"].isel(Time=index).values
+    if hasattr(xtime, "tobytes"):
+        xtime_str = xtime.tobytes().decode("utf-8")
+    else:
+        xtime_str = str(xtime)
+    return xtime_str.strip().split("_")[0]
+
+
 def boundary_segments(ds_mesh, mask):
     """
     Build line segments along cell-cell boundaries where mask changes
@@ -106,6 +119,30 @@ parser.add_argument("output_file_2")
 parser.add_argument("time_index_2", type=int)
 parser.add_argument("region_mask_file", nargs="?", default=None)
 parser.add_argument("region", nargs="?", default=None)
+parser.add_argument(
+    "--haf-range",
+    type=float,
+    default=None,
+    help="One-sided colorbar range (max abs value, in m) for the height-above-flotation "
+    "difference plot. Default: 90th percentile of abs(dhaf).",
+)
+parser.add_argument(
+    "--speed-range",
+    type=float,
+    default=None,
+    help="One-sided colorbar range (max abs value, in m/yr) for the surface-speed "
+    "difference plot. Default: 90th percentile of abs(speed_diff).",
+)
+parser.add_argument(
+    "--over-color",
+    default="magenta",
+    help="Color used for values above the colorbar range (default: %(default)s).",
+)
+parser.add_argument(
+    "--under-color",
+    default="purple",
+    help="Color used for values below the colorbar range (default: %(default)s).",
+)
 
 args = parser.parse_args()
 
@@ -118,6 +155,9 @@ ds2 = xr.open_dataset(args.output_file_2)
 
 h1 = at_time(ds1["thickness"], args.time_index_1)
 h2 = at_time(ds2["thickness"], args.time_index_2)
+
+date1 = xtime_ymd(ds1, args.time_index_1)
+date2 = xtime_ymd(ds2, args.time_index_2)
 
 # Bed always comes from the initial-condition file.
 bed = at_time(ds_init["bedTopography"], 0)
@@ -225,12 +265,17 @@ pad_y = 0.03 * dy if dy > 0.0 else 1000.0
 haf1 = height_above_flotation(h1, bed)
 haf2 = height_above_flotation(h2, bed)
 dhaf = haf2 - haf1
-max_abs_dhaf = float(np.nanmax(np.abs(dhaf.values)))
+if args.haf_range is not None:
+    max_abs_dhaf = args.haf_range
+else:
+    max_abs_dhaf = float(np.nanpercentile(np.abs(dhaf.values), 90))
 if max_abs_dhaf == 0.0:
     max_abs_dhaf = 1.0
 fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
-max_abs_dhaf = 50
-pc = mosaic.polypcolor(ax, descriptor, dhaf, cmap="RdBu_r", vmin=-max_abs_dhaf, vmax=max_abs_dhaf, edgecolors="none")
+cmap_haf = plt.get_cmap("RdBu_r").copy()
+cmap_haf.set_over(args.over_color)
+cmap_haf.set_under(args.under_color)
+pc = mosaic.polypcolor(ax, descriptor, dhaf, cmap=cmap_haf, vmin=-max_abs_dhaf, vmax=max_abs_dhaf, edgecolors="none")
 
 bdy1_color = 'b'
 gl1_color = 'g'
@@ -250,14 +295,12 @@ ax.set_xlabel("x [m]")
 ax.set_ylabel("y [m]")
 ax.set_title(
     f"Height above flotation change: "
-    f"{args.output_file_2}"
-    f"[{args.time_index_2}] - "
-    f"{args.output_file_1}"
-    f"[{args.time_index_1}]\n"
+    f"{date2} - "
+    f"{date1}\n"
     f"Region: {region_label}"
 )
 
-fig.colorbar(pc, ax=ax, label="Height above flotation difference [m]")
+fig.colorbar(pc, ax=ax, label="Height above flotation difference [m]", extend="both")
 ax.plot([], [], color=bdy1_color, ls="-", label="Ice edge, time 1")
 ax.plot([], [], color=gl1_color, ls="-", label="Grounding line, time 1")
 ax.plot([], [], color=bdy2_color, ls="-", label="Ice edge, time 2")
@@ -283,23 +326,28 @@ speed_diff = model_speed - obs_speed
 # Don't plot velocity error
 # where the model has no ice.
 speed_diff = speed_diff.where(h2 > 0.0)
-max_abs_du = float(np.nanmax(np.abs(speed_diff.values)))
+if args.speed_range is not None:
+    max_abs_du = args.speed_range
+else:
+    max_abs_du = float(np.nanpercentile(np.abs(speed_diff.values), 90))
 if max_abs_du == 0.0:
     max_abs_du = 1.0
 fig2, ax2 = plt.subplots(figsize=(10, 8), constrained_layout=True)
 
 bdy1_color = 'b'
 gl1_color = 'g'
-max_abs_du = 400
-pc = mosaic.polypcolor(ax2, descriptor, speed_diff, cmap="RdBu_r", vmin=-max_abs_du, vmax=max_abs_du, edgecolors="none")
+cmap_speed = plt.get_cmap("RdBu_r").copy()
+cmap_speed.set_over(args.over_color)
+cmap_speed.set_under(args.under_color)
+pc = mosaic.polypcolor(ax2, descriptor, speed_diff, cmap=cmap_speed, vmin=-max_abs_du, vmax=max_abs_du, edgecolors="none")
 plot_geometry(ax2, descriptor.ds, h2_mesh, bed_mesh, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
 ax2.set_xlim(xmin - pad_x, xmax + pad_x)
 ax2.set_ylim(ymin - pad_y, ymax + pad_y)
 ax2.set_aspect("equal")
 ax2.set_xlabel("x [m]")
 ax2.set_ylabel("y [m]")
-ax2.set_title(f"Modeled - observed surface speed: " f"{args.output_file_2}" f"[{args.time_index_2}]\n" f"Region: {region_label}")
-fig2.colorbar(pc, ax=ax2, label=("Surface speed difference " "[m yr$^{-1}$]"))
+ax2.set_title(f"Modeled - observed surface speed: " f"{date2}\n" f"Region: {region_label}")
+fig2.colorbar(pc, ax=ax2, label=("Surface speed difference " "[m yr$^{-1}$]"), extend="both")
 ax2.plot([], [], color=bdy1_color, ls="-", label="Ice edge")
 ax2.plot([], [], color=gl1_color, ls="-", label="Grounding line")
 ax2.legend(loc="best")
@@ -307,5 +355,37 @@ speed_filename = f"surface_speed_difference{region_suffix}.png"
 fig2.savefig(speed_filename, dpi=300)
 #plt.close(fig2)
 print(f"Wrote {speed_filename}")
+
+# =============================================================================
+# Modeled vs. observed surface speed, 1:1 scatter plot (log10-log10)
+# =============================================================================
+axis_lo, axis_hi = -2.0, 5.0
+
+obs_speed_vals = obs_speed.values
+model_speed_vals = model_speed.values
+valid = (
+    np.isfinite(obs_speed_vals)
+    & np.isfinite(model_speed_vals)
+    & (obs_speed_vals > 0.0)
+    & (model_speed_vals > 0.0)
+    & (h2.values > 0.0)
+)
+log_obs_speed = np.log10(obs_speed_vals[valid])
+log_model_speed = np.log10(model_speed_vals[valid])
+
+fig3, ax3 = plt.subplots(figsize=(8, 8), constrained_layout=True)
+ax3.scatter(log_obs_speed, log_model_speed, s=2, alpha=0.3, edgecolors="none")
+ax3.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
+ax3.set_xlim(axis_lo, axis_hi)
+ax3.set_ylim(axis_lo, axis_hi)
+ax3.set_aspect("equal")
+ax3.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
+ax3.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
+ax3.set_title(f"Modeled vs. observed surface speed: " f"{date2}\n" f"Region: {region_label}")
+ax3.legend(loc="best")
+hist_filename = f"surface_speed_scatter{region_suffix}.png"
+fig3.savefig(hist_filename, dpi=300)
+#plt.close(fig3)
+print(f"Wrote {hist_filename}")
 
 #plt.show()
