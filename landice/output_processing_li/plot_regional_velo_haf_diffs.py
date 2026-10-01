@@ -4,6 +4,7 @@ import argparse
 
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+from matplotlib.colors import LogNorm
 import numpy as np
 import xarray as xr
 
@@ -357,9 +358,13 @@ fig2.savefig(speed_filename, dpi=300)
 print(f"Wrote {speed_filename}")
 
 # =============================================================================
-# Modeled vs. observed surface speed, 1:1 scatter plot (log10-log10)
+# Modeled vs. observed surface speed, 1:1 heatmap, split by grounded/floating
 # =============================================================================
 axis_lo, axis_hi = -2.0, 5.0
+
+flotation_full = bed.values + (RHO_I / RHO_W) * h2.values
+grounded_mask_full = (h2.values > 0.0) & (flotation_full > 0.0)
+floating_mask_full = (h2.values > 0.0) & (flotation_full <= 0.0)
 
 obs_speed_vals = obs_speed.values
 model_speed_vals = model_speed.values
@@ -368,22 +373,34 @@ valid = (
     & np.isfinite(model_speed_vals)
     & (obs_speed_vals > 0.0)
     & (model_speed_vals > 0.0)
-    & (h2.values > 0.0)
 )
-log_obs_speed = np.log10(obs_speed_vals[valid])
-log_model_speed = np.log10(model_speed_vals[valid])
 
-fig3, ax3 = plt.subplots(figsize=(8, 8), constrained_layout=True)
-ax3.scatter(log_obs_speed, log_model_speed, s=2, alpha=0.3, edgecolors="none")
-ax3.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
-ax3.set_xlim(axis_lo, axis_hi)
-ax3.set_ylim(axis_lo, axis_hi)
-ax3.set_aspect("equal")
-ax3.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
-ax3.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
-ax3.set_title(f"Modeled vs. observed surface speed: " f"{date2}\n" f"Region: {region_label}")
-ax3.legend(loc="best")
-hist_filename = f"surface_speed_scatter{region_suffix}.png"
+heatmap_bins = np.linspace(axis_lo, axis_hi, 141)
+fig3, (ax3_grounded, ax3_floating) = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
+
+for ax3, ice_mask, panel_label in (
+    (ax3_grounded, grounded_mask_full, "Grounded ice"),
+    (ax3_floating, floating_mask_full, "Floating ice"),
+):
+    panel_valid = valid & ice_mask
+    log_obs_speed = np.log10(obs_speed_vals[panel_valid])
+    log_model_speed = np.log10(model_speed_vals[panel_valid])
+
+    _, _, _, heatmap_img = ax3.hist2d(
+        log_obs_speed, log_model_speed, bins=heatmap_bins, cmap="viridis", norm=LogNorm()
+    )
+    fig3.colorbar(heatmap_img, ax=ax3, label="Count")
+    ax3.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
+    ax3.set_xlim(axis_lo, axis_hi)
+    ax3.set_ylim(axis_lo, axis_hi)
+    ax3.set_aspect("equal")
+    ax3.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
+    ax3.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
+    ax3.set_title(panel_label)
+    ax3.legend(loc="best")
+
+fig3.suptitle(f"Modeled vs. observed surface speed: " f"{date2}\n" f"Region: {region_label}")
+hist_filename = f"surface_speed_heatmap{region_suffix}.png"
 fig3.savefig(hist_filename, dpi=300)
 #plt.close(fig3)
 print(f"Wrote {hist_filename}")
