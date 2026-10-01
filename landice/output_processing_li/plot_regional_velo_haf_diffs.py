@@ -14,6 +14,16 @@ RHO_I = 910.0
 RHO_W = 1028.0
 
 
+def height_above_flotation(thickness, bed):
+    """
+    Compute height above flotation (HAF) given ice thickness and bed
+    topography (both in meters, with bed relative to sea level).
+    """
+
+    flotation_thickness = np.maximum(0.0, -bed * (RHO_W / RHO_I))
+    return np.maximum(thickness - flotation_thickness, 0.0)
+
+
 def at_time(da, index=0):
     if "Time" in da.dims:
         return da.isel(Time=index)
@@ -33,42 +43,41 @@ def boundary_segments(ds_mesh, mask, region_mask=None):
     if region_mask is not None:
         region_mask = np.asarray(region_mask, dtype=bool)
 
-    n_cells = ds_mesh.sizes["nCells"]
-
-    n_edges_on_cell = ds_mesh["nEdgesOnCell"].values
-    cells_on_cell = ds_mesh["cellsOnCell"].values.astype(int) - 1
-    edges_on_cell = ds_mesh["edgesOnCell"].values.astype(int) - 1
+    # cellsOnEdge gives the (at most) two cells adjacent to each edge, so
+    # each shared cell-cell boundary is represented exactly once per edge
+    # and this can be evaluated with array operations instead of a
+    # per-cell/per-edge Python loop.
+    cells_on_edge = ds_mesh["cellsOnEdge"].values.astype(int) - 1
     vertices_on_edge = ds_mesh["verticesOnEdge"].values.astype(int) - 1
 
     x_vertex = ds_mesh["xVertex"].values
     y_vertex = ds_mesh["yVertex"].values
 
-    segments = []
+    i_cell = cells_on_edge[:, 0]
+    j_cell = cells_on_edge[:, 1]
 
-    for i_cell in range(n_cells):
-        if region_mask is not None and not region_mask[i_cell]:
-            continue
-        n_edges = n_edges_on_cell[i_cell]
-        for i_edge in range(n_edges):
-            j_cell = cells_on_cell[i_cell, i_edge]
-            # Skip mesh exterior / invalid neighbor.
-            if j_cell < 0:
-                continue
-            # Only process each shared edge once.
-            if j_cell < i_cell:
-                continue
-            if region_mask is not None:
-                if not region_mask[j_cell]:
-                    continue
-            if mask[i_cell] == mask[j_cell]:
-                continue
-            # Edge i connects vertex i to vertex i+1 around the cell.
-            found_edge = edges_on_cell[i_cell, i_edge]
-            v0 = vertices_on_edge[found_edge, 0]
-            v1 = vertices_on_edge[found_edge, 1]
-            if v0 < 0 or v1 < 0:
-                continue
-            segments.append([(x_vertex[v0], y_vertex[v0]), (x_vertex[v1], y_vertex[v1])])
+    # Skip mesh exterior / invalid neighbors on either side of the edge.
+    valid = (i_cell >= 0) & (j_cell >= 0)
+
+    if region_mask is not None:
+        valid &= region_mask[i_cell.clip(min=0)] & region_mask[j_cell.clip(min=0)]
+
+    is_boundary = valid & (mask[i_cell.clip(min=0)] != mask[j_cell.clip(min=0)])
+
+    v0 = vertices_on_edge[:, 0]
+    v1 = vertices_on_edge[:, 1]
+    is_boundary &= (v0 >= 0) & (v1 >= 0)
+
+    v0 = v0[is_boundary]
+    v1 = v1[is_boundary]
+
+    segments = np.stack(
+        [
+            np.stack([x_vertex[v0], y_vertex[v0]], axis=-1),
+            np.stack([x_vertex[v1], y_vertex[v1]], axis=-1),
+        ],
+        axis=1,
+    ).tolist()
     return segments
 
 
@@ -173,6 +182,8 @@ if args.region_mask_file is not None:
     ymin = float(y_region.min())
     ymax = float(y_region.max())
 
+region_suffix = f"_region{args.region}" if args.region is not None else ""
+
 dx = xmax - xmin
 dy = ymax - ymin
 pad_x = 0.03 * dx if dx > 0.0 else 1000.0
@@ -180,18 +191,20 @@ pad_y = 0.03 * dy if dy > 0.0 else 1000.0
 
 
 # =============================================================================
-# Thickness difference
+# Height-above-flotation difference
 # =============================================================================
 
-dh = h2 - h1
+haf1 = height_above_flotation(h1, bed)
+haf2 = height_above_flotation(h2, bed)
+dhaf = haf2 - haf1
 if region_mask is not None:
-    dh = dh.where(xr.DataArray(region_mask, dims=("nCells",)))
-max_abs_dh = float(np.nanmax(np.abs(dh.values)))
-if max_abs_dh == 0.0:
-    max_abs_dh = 1.0
+    dhaf = dhaf.where(xr.DataArray(region_mask, dims=("nCells",)))
+max_abs_dhaf = float(np.nanmax(np.abs(dhaf.values)))
+if max_abs_dhaf == 0.0:
+    max_abs_dhaf = 1.0
 fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
-max_abs_dh = 50
-pc = mosaic.polypcolor(ax, descriptor, dh, cmap="RdBu_r", vmin=-max_abs_dh, vmax=max_abs_dh, edgecolors="none")
+max_abs_dhaf = 50
+pc = mosaic.polypcolor(ax, descriptor, dhaf, cmap="RdBu_r", vmin=-max_abs_dhaf, vmax=max_abs_dhaf, edgecolors="none")
 
 bdy1_color = 'b'
 gl1_color = 'g'
@@ -205,7 +218,7 @@ ax.set_aspect("equal")
 ax.set_xlabel("x [m]")
 ax.set_ylabel("y [m]")
 ax.set_title(
-    f"Thickness change: "
+    f"Height above flotation change: "
     f"{args.output_file_2}"
     f"[{args.time_index_2}] - "
     f"{args.output_file_1}"
@@ -213,17 +226,18 @@ ax.set_title(
     f"Region: {region_label}"
 )
 
-fig.colorbar(pc, ax=ax, label="Thickness difference [m]")
+fig.colorbar(pc, ax=ax, label="Height above flotation difference [m]")
 ax.plot([], [], color=bdy1_color, ls="-", label="Ice edge, time 1")
 ax.plot([], [], color=gl1_color, ls="-", label="Grounding line, time 1")
 ax.plot([], [], color=bdy2_color, ls="-", label="Ice edge, time 2")
 ax.plot([], [], color=gl2_color, ls="-", label="Grounding line, time 2")
 ax.legend(loc="best")
 
-fig.savefig("thickness_difference.png", dpi=300)
+haf_filename = f"haf_difference{region_suffix}.png"
+fig.savefig(haf_filename, dpi=300)
 
 #plt.close(fig)
-print("Wrote thickness_difference.png")
+print(f"Wrote {haf_filename}")
 
 # =============================================================================
 # Surface-speed difference from observations
@@ -260,8 +274,9 @@ fig2.colorbar(pc, ax=ax2, label=("Surface speed difference " "[m yr$^{-1}$]"))
 ax2.plot([], [], color=bdy1_color, ls="-", label="Ice edge")
 ax2.plot([], [], color=gl1_color, ls="-", label="Grounding line")
 ax2.legend(loc="best")
-fig2.savefig("surface_speed_difference.png", dpi=300)
+speed_filename = f"surface_speed_difference{region_suffix}.png"
+fig2.savefig(speed_filename, dpi=300)
 #plt.close(fig2)
-print("Wrote surface_speed_difference.png")
+print(f"Wrote {speed_filename}")
 
 #plt.show()
