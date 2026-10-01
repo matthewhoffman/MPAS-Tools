@@ -30,25 +30,29 @@ def at_time(da, index=0):
     return da
 
 
-def boundary_segments(ds_mesh, mask, region_mask=None):
+def boundary_segments(ds_mesh, mask):
     """
     Build line segments along cell-cell boundaries where mask changes
     from True to False.
+
+    ``ds_mesh`` is expected to be a mosaic ``Descriptor.ds``-style dataset
+    (zero-indexed connectivity arrays, with ``-1`` denoting a missing / mesh
+    exterior neighbor). If ``ds_mesh`` has been culled down to a region via
+    ``mosaic.utils.cull_mesh``, edges that were cut at the region boundary
+    already have a ``-1`` neighbor, so they are naturally excluded below
+    without needing a separate region mask.
 
     Uses verticesOnCell / cellsOnCell connectivity from the MPAS mesh.
     """
 
     mask = np.asarray(mask, dtype=bool)
 
-    if region_mask is not None:
-        region_mask = np.asarray(region_mask, dtype=bool)
-
     # cellsOnEdge gives the (at most) two cells adjacent to each edge, so
     # each shared cell-cell boundary is represented exactly once per edge
     # and this can be evaluated with array operations instead of a
     # per-cell/per-edge Python loop.
-    cells_on_edge = ds_mesh["cellsOnEdge"].values.astype(int) - 1
-    vertices_on_edge = ds_mesh["verticesOnEdge"].values.astype(int) - 1
+    cells_on_edge = ds_mesh["cellsOnEdge"].values.astype(int)
+    vertices_on_edge = ds_mesh["verticesOnEdge"].values.astype(int)
 
     x_vertex = ds_mesh["xVertex"].values
     y_vertex = ds_mesh["yVertex"].values
@@ -58,9 +62,6 @@ def boundary_segments(ds_mesh, mask, region_mask=None):
 
     # Skip mesh exterior / invalid neighbors on either side of the edge.
     valid = (i_cell >= 0) & (j_cell >= 0)
-
-    if region_mask is not None:
-        valid &= region_mask[i_cell.clip(min=0)] & region_mask[j_cell.clip(min=0)]
 
     is_boundary = valid & (mask[i_cell.clip(min=0)] != mask[j_cell.clip(min=0)])
 
@@ -81,13 +82,13 @@ def boundary_segments(ds_mesh, mask, region_mask=None):
     return segments
 
 
-def plot_geometry(ax, ds_mesh, thickness, bed, region_mask, edge_color, gl_color,  edge_ls="-", gl_ls="--"):
+def plot_geometry(ax, ds_mesh, thickness, bed, edge_color, gl_color, edge_ls="-", gl_ls="--"):
     thickness = np.asarray(thickness)
     ice_mask = thickness > 0.0
     flotation = np.asarray(bed) + (RHO_I / RHO_W) * thickness
     grounded_mask = (thickness > 0.0) & (flotation > 0.0)
-    ice_segments = boundary_segments(ds_mesh, ice_mask, region_mask=region_mask)
-    gl_segments = boundary_segments(ds_mesh, grounded_mask, region_mask=region_mask)
+    ice_segments = boundary_segments(ds_mesh, ice_mask)
+    gl_segments = boundary_segments(ds_mesh, grounded_mask)
 
     if len(ice_segments) > 0:
         ax.add_collection(LineCollection(ice_segments, colors=edge_color, linewidths=0.5, linestyles=edge_ls))
@@ -129,6 +130,7 @@ descriptor = mosaic.Descriptor(ds_init, use_latlon=False)
 # -----------------------------------------------------------------------------
 
 region_mask = None
+index_to_cell_id = None
 
 xmin = float(ds_init.xCell.min())
 xmax = float(ds_init.xCell.max())
@@ -174,6 +176,10 @@ if args.region_mask_file is not None:
     region_mask_da = ds_regions["regionCellMasks"].isel(nRegions=region_index).astype(bool)
     region_mask = region_mask_da.values
     region_label = args.region
+
+    if not np.any(region_mask):
+        raise ValueError(f"Region '{region_label}' selects zero cells; nothing to plot.")
+
     x_region = ds_init.xCell.where(region_mask_da, drop=True)
     y_region = ds_init.yCell.where(region_mask_da, drop=True)
 
@@ -181,6 +187,28 @@ if args.region_mask_file is not None:
     xmax = float(x_region.max())
     ymin = float(y_region.min())
     ymax = float(y_region.max())
+
+    # Physically cull the mesh down to just the selected region's cells
+    # *before* any patches/boundary segments are built, so mosaic.polypcolor
+    # and the ice-edge/grounding-line LineCollections only ever have to
+    # process the (typically much smaller) region instead of the full mesh.
+    # ``descriptor.ds`` is already the zero-indexed minimal mesh dataset that
+    # mosaic.utils.cull_mesh expects (mirrors how Descriptor culls internally
+    # for reprojection). Edges cut at the region boundary end up with a
+    # cellsOnEdge value of -1, which boundary_segments already treats as a
+    # mesh exterior, so no separate region-mask filtering is needed there.
+    #
+    # NOTE: ``descriptor.sizes`` (the *original*, un-culled mesh dimension
+    # sizes) must be left untouched: mosaic.polypcolor/_get_array_location
+    # uses it to detect that a data array is still full-mesh-sized and to
+    # auto-subset it via the culled ds's ``indexToCellID`` lookup table. So
+    # full-size data arrays (dhaf, speed_diff, etc.) should be passed to
+    # mosaic.polypcolor unmodified; only arrays indexed directly against the
+    # culled connectivity (i.e. in plot_geometry/boundary_segments) need to
+    # be explicitly subset to the culled mesh via indexToCellID below.
+    cells_to_cull = ~region_mask
+    descriptor.ds = mosaic.utils.cull_mesh(descriptor.ds, cells_to_cull)
+    index_to_cell_id = descriptor.ds["indexToCellID"].values
 
 region_suffix = f"_region{args.region}" if args.region is not None else ""
 
@@ -197,8 +225,6 @@ pad_y = 0.03 * dy if dy > 0.0 else 1000.0
 haf1 = height_above_flotation(h1, bed)
 haf2 = height_above_flotation(h2, bed)
 dhaf = haf2 - haf1
-if region_mask is not None:
-    dhaf = dhaf.where(xr.DataArray(region_mask, dims=("nCells",)))
 max_abs_dhaf = float(np.nanmax(np.abs(dhaf.values)))
 if max_abs_dhaf == 0.0:
     max_abs_dhaf = 1.0
@@ -210,8 +236,13 @@ bdy1_color = 'b'
 gl1_color = 'g'
 bdy2_color = 'c'
 gl2_color = 'lime'
-plot_geometry(ax, ds_init, h1.values, bed.values, region_mask, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
-plot_geometry(ax, ds_init, h2.values, bed.values, region_mask, edge_color=bdy2_color, gl_color=gl2_color, edge_ls="-", gl_ls="-")
+# plot_geometry indexes directly into the (possibly culled) mesh
+# connectivity, so thickness/bed must match descriptor.ds's current size.
+h1_mesh = h1.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else h1.values
+h2_mesh = h2.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else h2.values
+bed_mesh = bed.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else bed.values
+plot_geometry(ax, descriptor.ds, h1_mesh, bed_mesh, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
+plot_geometry(ax, descriptor.ds, h2_mesh, bed_mesh, edge_color=bdy2_color, gl_color=gl2_color, edge_ls="-", gl_ls="-")
 ax.set_xlim(xmin - pad_x, xmax + pad_x)
 ax.set_ylim(ymin - pad_y, ymax + pad_y)
 ax.set_aspect("equal")
@@ -252,8 +283,6 @@ speed_diff = model_speed - obs_speed
 # Don't plot velocity error
 # where the model has no ice.
 speed_diff = speed_diff.where(h2 > 0.0)
-if region_mask is not None:
-    speed_diff = speed_diff.where(xr.DataArray(region_mask, dims=("nCells",)))
 max_abs_du = float(np.nanmax(np.abs(speed_diff.values)))
 if max_abs_du == 0.0:
     max_abs_du = 1.0
@@ -263,7 +292,7 @@ bdy1_color = 'b'
 gl1_color = 'g'
 max_abs_du = 400
 pc = mosaic.polypcolor(ax2, descriptor, speed_diff, cmap="RdBu_r", vmin=-max_abs_du, vmax=max_abs_du, edgecolors="none")
-plot_geometry(ax2, ds_init, h2.values, bed.values, region_mask, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
+plot_geometry(ax2, descriptor.ds, h2_mesh, bed_mesh, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
 ax2.set_xlim(xmin - pad_x, xmax + pad_x)
 ax2.set_ylim(ymin - pad_y, ymax + pad_y)
 ax2.set_aspect("equal")
