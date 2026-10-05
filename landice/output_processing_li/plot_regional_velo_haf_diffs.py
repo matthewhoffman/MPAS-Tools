@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
+import re
 
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
@@ -13,6 +15,8 @@ import mosaic
 SEC_PER_YEAR = 365.0 * 24.0 * 60.0 * 60.0
 RHO_I = 910.0
 RHO_W = 1028.0
+
+ALL_PLOT_TYPES = ("haf", "speed", "heatmap")
 
 
 def height_above_flotation(thickness, bed):
@@ -42,6 +46,87 @@ def xtime_ymd(ds, index):
     else:
         xtime_str = str(xtime)
     return xtime_str.strip().split("_")[0]
+
+
+def sanitize_filename_component(label):
+    """
+    Make a region label safe to embed in a filename by replacing anything
+    that isn't alphanumeric, a dash, or an underscore with an underscore.
+    """
+
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", label.strip())
+
+
+def get_region_names(ds_regions):
+    """
+    Return a list of region names decoded from ``regionNames`` or
+    ``regionMaskNames`` in ``ds_regions``, or ``None`` if neither variable
+    is present.
+    """
+
+    for name_var in ("regionNames", "regionMaskNames"):
+        if name_var not in ds_regions:
+            continue
+        raw = ds_regions[name_var].values
+        if raw.ndim == 1:
+            return [str(value.decode() if isinstance(value, bytes) else value).strip() for value in raw]
+        names = []
+        for row in raw:
+            chars = []
+            for char in row:
+                if isinstance(char, bytes):
+                    chars.append(char.decode("utf-8"))
+                else:
+                    chars.append(str(char))
+            names.append("".join(chars).replace("\x00", "").strip())
+        return names
+    return None
+
+
+def resolve_region_index(entry, names):
+    """
+    Resolve a single region specifier (name or 0-based index, as a string)
+    to a 0-based region index, using ``names`` (as returned by
+    ``get_region_names``) to resolve names.
+    """
+
+    entry = entry.strip()
+    try:
+        return int(entry)
+    except ValueError:
+        pass
+    if names is None:
+        raise ValueError(
+            f"Region '{entry}' was specified by name, but the region file has "
+            "neither regionNames nor regionMaskNames"
+        )
+    if entry not in names:
+        raise ValueError(f"Region '{entry}' not found.\nAvailable regions are:\n" + "\n".join(names))
+    return names.index(entry)
+
+
+def build_region_list(args, ds_regions):
+    """
+    Build the list of ``(region_index, region_label)`` pairs to process,
+    based on ``args.region`` and the contents of ``ds_regions``.
+    """
+
+    if ds_regions is None:
+        return [(None, "full mesh")]
+
+    n_regions = ds_regions.sizes["nRegions"]
+    names = get_region_names(ds_regions)
+
+    if args.region == "all":
+        return [(i, names[i] if names is not None else str(i)) for i in range(n_regions)]
+
+    entries = [entry for entry in args.region.split(",") if entry.strip() != ""]
+    region_list = []
+    for entry in entries:
+        index = resolve_region_index(entry, names)
+        label = names[index] if names is not None else str(index)
+        region_list.append((index, label))
+    return region_list
 
 
 def boundary_segments(ds_mesh, mask):
@@ -111,302 +196,390 @@ def plot_geometry(ax, ds_mesh, thickness, bed, edge_color, gl_color, edge_ls="-"
         ax.add_collection(LineCollection(gl_segments, colors=gl_color, linewidths=0.5, linestyles=gl_ls))
 
 
-parser = argparse.ArgumentParser(description="Plot MALI 2-D thickness change and surface-speed misfit")
-
-parser.add_argument("initial_file")
-parser.add_argument("output_file_1")
-parser.add_argument("time_index_1", type=int)
-parser.add_argument("output_file_2")
-parser.add_argument("time_index_2", type=int)
-parser.add_argument("region_mask_file", nargs="?", default=None)
-parser.add_argument("region", nargs="?", default=None)
-parser.add_argument(
-    "--haf-range",
-    type=float,
-    default=None,
-    help="One-sided colorbar range (max abs value, in m) for the height-above-flotation "
-    "difference plot. Default: 90th percentile of abs(dhaf).",
-)
-parser.add_argument(
-    "--speed-range",
-    type=float,
-    default=None,
-    help="One-sided colorbar range (max abs value, in m/yr) for the surface-speed "
-    "difference plot. Default: 90th percentile of abs(speed_diff).",
-)
-parser.add_argument(
-    "--over-color",
-    default="magenta",
-    help="Color used for values above the colorbar range (default: %(default)s).",
-)
-parser.add_argument(
-    "--under-color",
-    default="purple",
-    help="Color used for values below the colorbar range (default: %(default)s).",
-)
-
-args = parser.parse_args()
-
-if (args.region_mask_file is None) != (args.region is None):
-    parser.error("region_mask_file and region must either both be given " "or both be omitted")
-
-ds_init = xr.open_dataset(args.initial_file)
-ds1 = xr.open_dataset(args.output_file_1)
-ds2 = xr.open_dataset(args.output_file_2)
-
-h1 = at_time(ds1["thickness"], args.time_index_1)
-h2 = at_time(ds2["thickness"], args.time_index_2)
-
-date1 = xtime_ymd(ds1, args.time_index_1)
-date2 = xtime_ymd(ds2, args.time_index_2)
-
-# Bed always comes from the initial-condition file.
-bed = at_time(ds_init["bedTopography"], 0)
-
-# Build the Mosaic descriptor from the initial-condition file.
-descriptor = mosaic.Descriptor(ds_init, use_latlon=False)
-
-# -----------------------------------------------------------------------------
-# Optional region subset
-# -----------------------------------------------------------------------------
-
-region_mask = None
-index_to_cell_id = None
-
-xmin = float(ds_init.xCell.min())
-xmax = float(ds_init.xCell.max())
-ymin = float(ds_init.yCell.min())
-ymax = float(ds_init.yCell.max())
-
-region_label = "full mesh"
-
-
-if args.region_mask_file is not None:
-
-    ds_regions = xr.open_dataset(args.region_mask_file)
-    # Allow either zero-based region index or region name.
-    try:
-        region_index = int(args.region)
-    except ValueError:
-        names = None
-        for name_var in ("regionNames", "regionMaskNames"):
-            if name_var not in ds_regions:
-                continue
-            raw = ds_regions[name_var].values
-            if raw.ndim == 1:
-                names = [str(value.decode() if isinstance(value, bytes) else value).strip() for value in raw]
-            else:
-                names = []
-                for row in raw:
-                    chars = []
-                    for char in row:
-                        if isinstance(char, bytes):
-                            chars.append(char.decode("utf-8"))
-                        else:
-                            chars.append(str(char))
-                    names.append("".join(chars).replace("\x00", "").strip())
-            break
-        if names is None:
-            raise ValueError(
-                "Region was specified by name, but " "the region file has neither " "regionNames nor regionMaskNames"
-            )
-        if args.region not in names:
-            raise ValueError(f"Region '{args.region}' not found.\n" "Available regions are:\n" + "\n".join(names))
-        region_index = names.index(args.region)
-
-    region_mask_da = ds_regions["regionCellMasks"].isel(nRegions=region_index).astype(bool)
-    region_mask = region_mask_da.values
-    region_label = args.region
-
-    if not np.any(region_mask):
-        raise ValueError(f"Region '{region_label}' selects zero cells; nothing to plot.")
-
-    x_region = ds_init.xCell.where(region_mask_da, drop=True)
-    y_region = ds_init.yCell.where(region_mask_da, drop=True)
-
-    xmin = float(x_region.min())
-    xmax = float(x_region.max())
-    ymin = float(y_region.min())
-    ymax = float(y_region.max())
-
-    # Physically cull the mesh down to just the selected region's cells
-    # *before* any patches/boundary segments are built, so mosaic.polypcolor
-    # and the ice-edge/grounding-line LineCollections only ever have to
-    # process the (typically much smaller) region instead of the full mesh.
-    # ``descriptor.ds`` is already the zero-indexed minimal mesh dataset that
-    # mosaic.utils.cull_mesh expects (mirrors how Descriptor culls internally
-    # for reprojection). Edges cut at the region boundary end up with a
-    # cellsOnEdge value of -1, which boundary_segments already treats as a
-    # mesh exterior, so no separate region-mask filtering is needed there.
-    #
-    # NOTE: ``descriptor.sizes`` (the *original*, un-culled mesh dimension
-    # sizes) must be left untouched: mosaic.polypcolor/_get_array_location
-    # uses it to detect that a data array is still full-mesh-sized and to
-    # auto-subset it via the culled ds's ``indexToCellID`` lookup table. So
-    # full-size data arrays (dhaf, speed_diff, etc.) should be passed to
-    # mosaic.polypcolor unmodified; only arrays indexed directly against the
-    # culled connectivity (i.e. in plot_geometry/boundary_segments) need to
-    # be explicitly subset to the culled mesh via indexToCellID below.
-    cells_to_cull = ~region_mask
-    descriptor.ds = mosaic.utils.cull_mesh(descriptor.ds, cells_to_cull)
-    index_to_cell_id = descriptor.ds["indexToCellID"].values
-
-region_suffix = f"_region{args.region}" if args.region is not None else ""
-
-dx = xmax - xmin
-dy = ymax - ymin
-pad_x = 0.03 * dx if dx > 0.0 else 1000.0
-pad_y = 0.03 * dy if dy > 0.0 else 1000.0
-
-
-# =============================================================================
-# Height-above-flotation difference
-# =============================================================================
-
-haf1 = height_above_flotation(h1, bed)
-haf2 = height_above_flotation(h2, bed)
-dhaf = haf2 - haf1
-if args.haf_range is not None:
-    max_abs_dhaf = args.haf_range
-else:
-    max_abs_dhaf = float(np.nanpercentile(np.abs(dhaf.values), 90))
-if max_abs_dhaf == 0.0:
-    max_abs_dhaf = 1.0
-fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
-cmap_haf = plt.get_cmap("RdBu_r").copy()
-cmap_haf.set_over(args.over_color)
-cmap_haf.set_under(args.under_color)
-pc = mosaic.polypcolor(ax, descriptor, dhaf, cmap=cmap_haf, vmin=-max_abs_dhaf, vmax=max_abs_dhaf, edgecolors="none")
-
-bdy1_color = 'b'
-gl1_color = 'g'
-bdy2_color = 'c'
-gl2_color = 'lime'
-# plot_geometry indexes directly into the (possibly culled) mesh
-# connectivity, so thickness/bed must match descriptor.ds's current size.
-h1_mesh = h1.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else h1.values
-h2_mesh = h2.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else h2.values
-bed_mesh = bed.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else bed.values
-plot_geometry(ax, descriptor.ds, h1_mesh, bed_mesh, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
-plot_geometry(ax, descriptor.ds, h2_mesh, bed_mesh, edge_color=bdy2_color, gl_color=gl2_color, edge_ls="-", gl_ls="-")
-ax.set_xlim(xmin - pad_x, xmax + pad_x)
-ax.set_ylim(ymin - pad_y, ymax + pad_y)
-ax.set_aspect("equal")
-ax.set_xlabel("x [m]")
-ax.set_ylabel("y [m]")
-ax.set_title(
-    f"Height above flotation change: "
-    f"{date2} - "
-    f"{date1}\n"
-    f"Region: {region_label}"
-)
-
-fig.colorbar(pc, ax=ax, label="Height above flotation difference [m]", extend="both")
-ax.plot([], [], color=bdy1_color, ls="-", label="Ice edge, time 1")
-ax.plot([], [], color=gl1_color, ls="-", label="Grounding line, time 1")
-ax.plot([], [], color=bdy2_color, ls="-", label="Ice edge, time 2")
-ax.plot([], [], color=gl2_color, ls="-", label="Grounding line, time 2")
-ax.legend(loc="best")
-
-haf_filename = f"haf_difference{region_suffix}.png"
-fig.savefig(haf_filename, dpi=300)
-
-#plt.close(fig)
-print(f"Wrote {haf_filename}")
-
-# =============================================================================
-# Surface-speed difference from observations
-#
-# Uses the SECOND requested model time slice.
-# =============================================================================
-obs_u = at_time(ds_init["observedSurfaceVelocityX"], 0)
-obs_v = at_time(ds_init["observedSurfaceVelocityY"], 0)
-obs_speed = np.sqrt(obs_u**2 + obs_v**2) * SEC_PER_YEAR
-model_speed = at_time(ds2["surfaceSpeed"], args.time_index_2) * SEC_PER_YEAR
-speed_diff = model_speed - obs_speed
-# Don't plot velocity error
-# where the model has no ice.
-speed_diff = speed_diff.where(h2 > 0.0)
-if args.speed_range is not None:
-    max_abs_du = args.speed_range
-else:
-    max_abs_du = float(np.nanpercentile(np.abs(speed_diff.values), 90))
-if max_abs_du == 0.0:
-    max_abs_du = 1.0
-fig2, ax2 = plt.subplots(figsize=(10, 8), constrained_layout=True)
-
-bdy1_color = 'b'
-gl1_color = 'g'
-cmap_speed = plt.get_cmap("RdBu_r").copy()
-cmap_speed.set_over(args.over_color)
-cmap_speed.set_under(args.under_color)
-pc = mosaic.polypcolor(ax2, descriptor, speed_diff, cmap=cmap_speed, vmin=-max_abs_du, vmax=max_abs_du, edgecolors="none")
-plot_geometry(ax2, descriptor.ds, h2_mesh, bed_mesh, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
-ax2.set_xlim(xmin - pad_x, xmax + pad_x)
-ax2.set_ylim(ymin - pad_y, ymax + pad_y)
-ax2.set_aspect("equal")
-ax2.set_xlabel("x [m]")
-ax2.set_ylabel("y [m]")
-ax2.set_title(f"Modeled - observed surface speed: " f"{date2}\n" f"Region: {region_label}")
-fig2.colorbar(pc, ax=ax2, label=("Surface speed difference " "[m yr$^{-1}$]"), extend="both")
-ax2.plot([], [], color=bdy1_color, ls="-", label="Ice edge")
-ax2.plot([], [], color=gl1_color, ls="-", label="Grounding line")
-ax2.legend(loc="best")
-speed_filename = f"surface_speed_difference{region_suffix}.png"
-fig2.savefig(speed_filename, dpi=300)
-#plt.close(fig2)
-print(f"Wrote {speed_filename}")
-
-# =============================================================================
-# Modeled vs. observed surface speed, 1:1 heatmap, split by grounded/floating
-# =============================================================================
-axis_lo, axis_hi = -2.0, 5.0
-
-flotation_full = bed.values + (RHO_I / RHO_W) * h2.values
-grounded_mask_full = (h2.values > 0.0) & (flotation_full > 0.0)
-floating_mask_full = (h2.values > 0.0) & (flotation_full <= 0.0)
-
-obs_speed_vals = obs_speed.values
-model_speed_vals = model_speed.values
-valid = (
-    np.isfinite(obs_speed_vals)
-    & np.isfinite(model_speed_vals)
-    & (obs_speed_vals > 0.0)
-    & (model_speed_vals > 0.0)
-)
-# Restrict the heatmap to the selected region, if one was given, so it
-# matches the subset shown in the map plots above.
-if region_mask is not None:
-    valid = valid & region_mask
-
-heatmap_bins = np.linspace(axis_lo, axis_hi, 141)
-fig3, (ax3_grounded, ax3_floating) = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
-
-for ax3, ice_mask, panel_label in (
-    (ax3_grounded, grounded_mask_full, "Grounded ice"),
-    (ax3_floating, floating_mask_full, "Floating ice"),
+def process_region(
+    region_index,
+    region_label,
+    *,
+    ds_init,
+    ds_regions,
+    descriptor_pristine,
+    full_bounds,
+    h1,
+    h2,
+    bed,
+    dhaf,
+    max_abs_dhaf,
+    speed_diff,
+    max_abs_du,
+    obs_speed_vals,
+    model_speed_vals,
+    grounded_mask_full,
+    floating_mask_full,
+    valid_base,
+    date1,
+    date2,
+    args,
+    plots_to_make,
 ):
-    panel_valid = valid & ice_mask
-    log_obs_speed = np.log10(obs_speed_vals[panel_valid])
-    log_model_speed = np.log10(model_speed_vals[panel_valid])
+    """
+    Produce the requested subset of the 3 plot types (HAF difference,
+    surface-speed difference, and surface-speed heatmap) for a single
+    region (or the full mesh, if ``region_index`` is ``None``).
 
-    _, _, _, heatmap_img = ax3.hist2d(
-        log_obs_speed, log_model_speed, bins=heatmap_bins, cmap="viridis", norm=LogNorm()
+    Raises on any condition that should abort processing of this one
+    region (e.g. a region that selects zero cells); callers are expected
+    to catch and report these so a multi-region loop can continue with
+    the remaining regions.
+    """
+
+    region_mask = None
+    if region_index is not None:
+        region_mask_da = ds_regions["regionCellMasks"].isel(nRegions=region_index).astype(bool)
+        region_mask = region_mask_da.values
+
+        if not np.any(region_mask):
+            raise ValueError(f"Region '{region_label}' selects zero cells; nothing to plot.")
+
+        x_region = ds_init.xCell.where(region_mask_da, drop=True)
+        y_region = ds_init.yCell.where(region_mask_da, drop=True)
+        xmin = float(x_region.min())
+        xmax = float(x_region.max())
+        ymin = float(y_region.min())
+        ymax = float(y_region.max())
+        region_suffix = f"_region{sanitize_filename_component(region_label)}"
+    else:
+        xmin, xmax, ymin, ymax = full_bounds
+        region_suffix = ""
+
+    dx = xmax - xmin
+    dy = ymax - ymin
+    pad_x = 0.03 * dx if dx > 0.0 else 1000.0
+    pad_y = 0.03 * dy if dy > 0.0 else 1000.0
+
+    need_mesh = ("haf" in plots_to_make) or ("speed" in plots_to_make)
+    descriptor = None
+    index_to_cell_id = None
+    h1_mesh = h2_mesh = bed_mesh = None
+
+    if need_mesh:
+        # mosaic.utils.cull_mesh mutates descriptor.ds in place, so work on
+        # a fresh copy of the pristine (un-culled) descriptor for each
+        # region rather than mutating a shared instance.
+        descriptor = copy.deepcopy(descriptor_pristine)
+
+        if region_mask is not None:
+            # Physically cull the mesh down to just the selected region's
+            # cells *before* any patches/boundary segments are built, so
+            # mosaic.polypcolor and the ice-edge/grounding-line
+            # LineCollections only ever have to process the (typically much
+            # smaller) region instead of the full mesh. ``descriptor.ds`` is
+            # already the zero-indexed minimal mesh dataset that
+            # mosaic.utils.cull_mesh expects (mirrors how Descriptor culls
+            # internally for reprojection). Edges cut at the region
+            # boundary end up with a cellsOnEdge value of -1, which
+            # boundary_segments already treats as a mesh exterior, so no
+            # separate region-mask filtering is needed there.
+            #
+            # NOTE: ``descriptor.sizes`` (the *original*, un-culled mesh
+            # dimension sizes) must be left untouched: mosaic.polypcolor/
+            # _get_array_location uses it to detect that a data array is
+            # still full-mesh-sized and to auto-subset it via the culled
+            # ds's ``indexToCellID`` lookup table. So full-size data arrays
+            # (dhaf, speed_diff, etc.) should be passed to mosaic.polypcolor
+            # unmodified; only arrays indexed directly against the culled
+            # connectivity (i.e. in plot_geometry/boundary_segments) need to
+            # be explicitly subset to the culled mesh via indexToCellID
+            # below.
+            cells_to_cull = ~region_mask
+            descriptor.ds = mosaic.utils.cull_mesh(descriptor.ds, cells_to_cull)
+            index_to_cell_id = descriptor.ds["indexToCellID"].values
+
+        # plot_geometry indexes directly into the (possibly culled) mesh
+        # connectivity, so thickness/bed must match descriptor.ds's current
+        # size.
+        h1_mesh = h1.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else h1.values
+        h2_mesh = h2.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else h2.values
+        bed_mesh = bed.isel(nCells=index_to_cell_id).values if index_to_cell_id is not None else bed.values
+
+    # =========================================================================
+    # Height-above-flotation difference
+    # =========================================================================
+    if "haf" in plots_to_make:
+        fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
+        cmap_haf = plt.get_cmap("RdBu_r").copy()
+        cmap_haf.set_over(args.over_color)
+        cmap_haf.set_under(args.under_color)
+        pc = mosaic.polypcolor(
+            ax, descriptor, dhaf, cmap=cmap_haf, vmin=-max_abs_dhaf, vmax=max_abs_dhaf, edgecolors="none"
+        )
+
+        bdy1_color = "b"
+        gl1_color = "g"
+        bdy2_color = "c"
+        gl2_color = "lime"
+        plot_geometry(ax, descriptor.ds, h1_mesh, bed_mesh, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
+        plot_geometry(ax, descriptor.ds, h2_mesh, bed_mesh, edge_color=bdy2_color, gl_color=gl2_color, edge_ls="-", gl_ls="-")
+        ax.set_xlim(xmin - pad_x, xmax + pad_x)
+        ax.set_ylim(ymin - pad_y, ymax + pad_y)
+        ax.set_aspect("equal")
+        ax.set_xlabel("x [m]")
+        ax.set_ylabel("y [m]")
+        ax.set_title(f"Height above flotation change: {date2} - {date1}\nRegion: {region_label}")
+
+        fig.colorbar(pc, ax=ax, label="Height above flotation difference [m]", extend="both")
+        ax.plot([], [], color=bdy1_color, ls="-", label="Ice edge, time 1")
+        ax.plot([], [], color=gl1_color, ls="-", label="Grounding line, time 1")
+        ax.plot([], [], color=bdy2_color, ls="-", label="Ice edge, time 2")
+        ax.plot([], [], color=gl2_color, ls="-", label="Grounding line, time 2")
+        ax.legend(loc="best")
+
+        haf_filename = f"haf_difference{region_suffix}.png"
+        fig.savefig(haf_filename, dpi=300)
+        plt.close(fig)
+        print(f"Wrote {haf_filename}")
+
+    # =========================================================================
+    # Surface-speed difference from observations
+    # =========================================================================
+    if "speed" in plots_to_make:
+        fig2, ax2 = plt.subplots(figsize=(10, 8), constrained_layout=True)
+
+        bdy1_color = "b"
+        gl1_color = "g"
+        cmap_speed = plt.get_cmap("RdBu_r").copy()
+        cmap_speed.set_over(args.over_color)
+        cmap_speed.set_under(args.under_color)
+        pc = mosaic.polypcolor(
+            ax2, descriptor, speed_diff, cmap=cmap_speed, vmin=-max_abs_du, vmax=max_abs_du, edgecolors="none"
+        )
+        plot_geometry(ax2, descriptor.ds, h2_mesh, bed_mesh, edge_color=bdy1_color, gl_color=gl1_color, edge_ls="-", gl_ls="-")
+        ax2.set_xlim(xmin - pad_x, xmax + pad_x)
+        ax2.set_ylim(ymin - pad_y, ymax + pad_y)
+        ax2.set_aspect("equal")
+        ax2.set_xlabel("x [m]")
+        ax2.set_ylabel("y [m]")
+        ax2.set_title(f"Modeled - observed surface speed: {date2}\nRegion: {region_label}")
+        fig2.colorbar(pc, ax=ax2, label=("Surface speed difference [m yr$^{-1}$]"), extend="both")
+        ax2.plot([], [], color=bdy1_color, ls="-", label="Ice edge")
+        ax2.plot([], [], color=gl1_color, ls="-", label="Grounding line")
+        ax2.legend(loc="best")
+        speed_filename = f"surface_speed_difference{region_suffix}.png"
+        fig2.savefig(speed_filename, dpi=300)
+        plt.close(fig2)
+        print(f"Wrote {speed_filename}")
+
+    # =========================================================================
+    # Modeled vs. observed surface speed, 1:1 heatmap, split by grounded/floating
+    # =========================================================================
+    if "heatmap" in plots_to_make:
+        axis_lo, axis_hi = -2.0, 5.0
+
+        # The heatmap works directly off the full-mesh-sized value arrays and
+        # a boolean region_mask, so it doesn't need the culled mesh/descriptor
+        # built above.
+        valid = valid_base if region_mask is None else (valid_base & region_mask)
+
+        heatmap_bins = np.linspace(axis_lo, axis_hi, 141)
+        fig3, (ax3_grounded, ax3_floating) = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
+
+        for ax3, ice_mask, panel_label in (
+            (ax3_grounded, grounded_mask_full, "Grounded ice"),
+            (ax3_floating, floating_mask_full, "Floating ice"),
+        ):
+            panel_valid = valid & ice_mask
+            log_obs_speed = np.log10(obs_speed_vals[panel_valid])
+            log_model_speed = np.log10(model_speed_vals[panel_valid])
+
+            _, _, _, heatmap_img = ax3.hist2d(
+                log_obs_speed, log_model_speed, bins=heatmap_bins, cmap="viridis", norm=LogNorm()
+            )
+            fig3.colorbar(heatmap_img, ax=ax3, label="Count")
+            ax3.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
+            ax3.set_xlim(axis_lo, axis_hi)
+            ax3.set_ylim(axis_lo, axis_hi)
+            ax3.set_aspect("equal")
+            ax3.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
+            ax3.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
+            ax3.set_title(panel_label)
+            ax3.legend(loc="best")
+
+        fig3.suptitle(f"Modeled vs. observed surface speed: {date2}\nRegion: {region_label}")
+        hist_filename = f"surface_speed_heatmap{region_suffix}.png"
+        fig3.savefig(hist_filename, dpi=300)
+        plt.close(fig3)
+        print(f"Wrote {hist_filename}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Plot MALI 2-D thickness change and surface-speed misfit")
+
+    parser.add_argument("initial_file")
+    parser.add_argument("output_file_1")
+    parser.add_argument("time_index_1", type=int)
+    parser.add_argument("output_file_2")
+    parser.add_argument("time_index_2", type=int)
+    parser.add_argument("region_mask_file", nargs="?", default=None)
+    parser.add_argument(
+        "region",
+        nargs="?",
+        default=None,
+        help="A single region name or 0-based index, a comma-separated list of "
+        "names/indices, or the keyword 'all' to loop over every region in "
+        "region_mask_file.",
     )
-    fig3.colorbar(heatmap_img, ax=ax3, label="Count")
-    ax3.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
-    ax3.set_xlim(axis_lo, axis_hi)
-    ax3.set_ylim(axis_lo, axis_hi)
-    ax3.set_aspect("equal")
-    ax3.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
-    ax3.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
-    ax3.set_title(panel_label)
-    ax3.legend(loc="best")
+    parser.add_argument(
+        "--plots",
+        nargs="+",
+        choices=ALL_PLOT_TYPES,
+        default=list(ALL_PLOT_TYPES),
+        help="Which plot types to generate (default: all three). "
+        "Choices: haf (height-above-flotation difference map), "
+        "speed (surface-speed difference map), "
+        "heatmap (modeled-vs-observed surface-speed heatmap).",
+    )
+    parser.add_argument(
+        "--haf-range",
+        type=float,
+        default=None,
+        help="One-sided colorbar range (max abs value, in m) for the height-above-flotation "
+        "difference plot. Default: 90th percentile of abs(dhaf).",
+    )
+    parser.add_argument(
+        "--speed-range",
+        type=float,
+        default=None,
+        help="One-sided colorbar range (max abs value, in m/yr) for the surface-speed "
+        "difference plot. Default: 90th percentile of abs(speed_diff).",
+    )
+    parser.add_argument(
+        "--over-color",
+        default="magenta",
+        help="Color used for values above the colorbar range (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--under-color",
+        default="purple",
+        help="Color used for values below the colorbar range (default: %(default)s).",
+    )
 
-fig3.suptitle(f"Modeled vs. observed surface speed: " f"{date2}\n" f"Region: {region_label}")
-hist_filename = f"surface_speed_heatmap{region_suffix}.png"
-fig3.savefig(hist_filename, dpi=300)
-#plt.close(fig3)
-print(f"Wrote {hist_filename}")
+    args = parser.parse_args()
 
-#plt.show()
+    if (args.region_mask_file is None) != (args.region is None):
+        parser.error("region_mask_file and region must either both be given or both be omitted")
+
+    plots_to_make = set(args.plots)
+
+    ds_init = xr.open_dataset(args.initial_file)
+    ds1 = xr.open_dataset(args.output_file_1)
+    ds2 = xr.open_dataset(args.output_file_2)
+
+    h1 = at_time(ds1["thickness"], args.time_index_1)
+    h2 = at_time(ds2["thickness"], args.time_index_2)
+
+    date1 = xtime_ymd(ds1, args.time_index_1)
+    date2 = xtime_ymd(ds2, args.time_index_2)
+
+    # Bed always comes from the initial-condition file.
+    bed = at_time(ds_init["bedTopography"], 0)
+
+    # Build the Mosaic descriptor from the initial-condition file once; a
+    # fresh (deep) copy of it is culled per-region in process_region, since
+    # mosaic.utils.cull_mesh mutates descriptor.ds in place.
+    descriptor_pristine = mosaic.Descriptor(ds_init, use_latlon=False)
+
+    full_bounds = (
+        float(ds_init.xCell.min()),
+        float(ds_init.xCell.max()),
+        float(ds_init.yCell.min()),
+        float(ds_init.yCell.max()),
+    )
+
+    ds_regions = xr.open_dataset(args.region_mask_file) if args.region_mask_file is not None else None
+    region_list = build_region_list(args, ds_regions)
+
+    # -------------------------------------------------------------------
+    # Region-independent precomputation, shared across all regions below.
+    # -------------------------------------------------------------------
+
+    haf1 = height_above_flotation(h1, bed)
+    haf2 = height_above_flotation(h2, bed)
+    dhaf = haf2 - haf1
+    if args.haf_range is not None:
+        max_abs_dhaf = args.haf_range
+    else:
+        max_abs_dhaf = float(np.nanpercentile(np.abs(dhaf.values), 90))
+    if max_abs_dhaf == 0.0:
+        max_abs_dhaf = 1.0
+
+    # Uses the SECOND requested model time slice.
+    obs_u = at_time(ds_init["observedSurfaceVelocityX"], 0)
+    obs_v = at_time(ds_init["observedSurfaceVelocityY"], 0)
+    obs_speed = np.sqrt(obs_u**2 + obs_v**2) * SEC_PER_YEAR
+    model_speed = at_time(ds2["surfaceSpeed"], args.time_index_2) * SEC_PER_YEAR
+    speed_diff = model_speed - obs_speed
+    # Don't plot velocity error where the model has no ice.
+    speed_diff = speed_diff.where(h2 > 0.0)
+    if args.speed_range is not None:
+        max_abs_du = args.speed_range
+    else:
+        max_abs_du = float(np.nanpercentile(np.abs(speed_diff.values), 90))
+    if max_abs_du == 0.0:
+        max_abs_du = 1.0
+
+    flotation_full = bed.values + (RHO_I / RHO_W) * h2.values
+    grounded_mask_full = (h2.values > 0.0) & (flotation_full > 0.0)
+    floating_mask_full = (h2.values > 0.0) & (flotation_full <= 0.0)
+
+    obs_speed_vals = obs_speed.values
+    model_speed_vals = model_speed.values
+    valid_base = (
+        np.isfinite(obs_speed_vals)
+        & np.isfinite(model_speed_vals)
+        & (obs_speed_vals > 0.0)
+        & (model_speed_vals > 0.0)
+    )
+
+    # -------------------------------------------------------------------
+    # Process each requested region, warning and continuing on failure
+    # rather than aborting the whole run (e.g. a region with zero cells).
+    # -------------------------------------------------------------------
+
+    n_succeeded = 0
+    n_skipped = 0
+    for region_index, region_label in region_list:
+        try:
+            process_region(
+                region_index,
+                region_label,
+                ds_init=ds_init,
+                ds_regions=ds_regions,
+                descriptor_pristine=descriptor_pristine,
+                full_bounds=full_bounds,
+                h1=h1,
+                h2=h2,
+                bed=bed,
+                dhaf=dhaf,
+                max_abs_dhaf=max_abs_dhaf,
+                speed_diff=speed_diff,
+                max_abs_du=max_abs_du,
+                obs_speed_vals=obs_speed_vals,
+                model_speed_vals=model_speed_vals,
+                grounded_mask_full=grounded_mask_full,
+                floating_mask_full=floating_mask_full,
+                valid_base=valid_base,
+                date1=date1,
+                date2=date2,
+                args=args,
+                plots_to_make=plots_to_make,
+            )
+            n_succeeded += 1
+        except Exception as exc:  # noqa: BLE001 - intentionally broad: warn and continue
+            print(f"Warning: skipping region '{region_label}': {exc}")
+            n_skipped += 1
+
+    if len(region_list) > 1:
+        print(f"Processed {n_succeeded} region(s), skipped {n_skipped} region(s).")
+
+
+if __name__ == "__main__":
+    main()
