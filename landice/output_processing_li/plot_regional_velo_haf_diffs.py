@@ -374,6 +374,10 @@ valid = (
     & (obs_speed_vals > 0.0)
     & (model_speed_vals > 0.0)
 )
+# Restrict the heatmap to the selected region, if one was given, so it
+# matches the subset shown in the map plots above.
+if region_mask is not None:
+    valid = valid & region_mask
 
 heatmap_bins = np.linspace(axis_lo, axis_hi, 141)
 fig3, (ax3_grounded, ax3_floating) = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
