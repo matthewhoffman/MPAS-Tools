@@ -246,10 +246,12 @@ def process_region(
         xmax = float(x_region.max())
         ymin = float(y_region.min())
         ymax = float(y_region.max())
-        region_suffix = f"_region{sanitize_filename_component(region_label)}"
+        region_suffix = f"_region{region_index}_{sanitize_filename_component(region_label)}"
+        region_display = f"{region_label} ({region_index})"
     else:
         xmin, xmax, ymin, ymax = full_bounds
         region_suffix = ""
+        region_display = region_label
 
     dx = xmax - xmin
     dy = ymax - ymin
@@ -324,7 +326,7 @@ def process_region(
         ax.set_aspect("equal")
         ax.set_xlabel("x [m]")
         ax.set_ylabel("y [m]")
-        ax.set_title(f"Height above flotation change: {date2} - {date1}\nRegion: {region_label}")
+        ax.set_title(f"Height above flotation change: {date2} - {date1}\nRegion: {region_display}")
 
         fig.colorbar(pc, ax=ax, label="Height above flotation difference [m]", extend="both")
         ax.plot([], [], color=bdy1_color, ls="-", label="Ice edge, time 1")
@@ -358,7 +360,7 @@ def process_region(
         ax2.set_aspect("equal")
         ax2.set_xlabel("x [m]")
         ax2.set_ylabel("y [m]")
-        ax2.set_title(f"Modeled - observed surface speed: {date2}\nRegion: {region_label}")
+        ax2.set_title(f"Modeled - observed surface speed: {date2}\nRegion: {region_display}")
         fig2.colorbar(pc, ax=ax2, label=("Surface speed difference [m yr$^{-1}$]"), extend="both")
         ax2.plot([], [], color=bdy1_color, ls="-", label="Ice edge")
         ax2.plot([], [], color=gl1_color, ls="-", label="Grounding line")
@@ -403,7 +405,7 @@ def process_region(
             ax3.set_title(panel_label)
             ax3.legend(loc="best")
 
-        fig3.suptitle(f"Modeled vs. observed surface speed: {date2}\nRegion: {region_label}")
+        fig3.suptitle(f"Modeled vs. observed surface speed: {date2}\nRegion: {region_display}")
         hist_filename = f"surface_speed_heatmap{region_suffix}.png"
         fig3.savefig(hist_filename, dpi=300)
         plt.close(fig3)
