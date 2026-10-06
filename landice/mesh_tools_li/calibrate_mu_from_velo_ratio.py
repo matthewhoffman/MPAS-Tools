@@ -5,10 +5,14 @@ surface-speed ratio.
 
 For each region in ``region_mask_file``:
   1. Grounded-ice cells are binned by log10(modeled speed) (4 bins per log
-     cycle to start), and the mean modeled/observed speed ratio is computed
-     per bin.
-  2. A low-degree polynomial is fit to log10(ratio) vs. log10(modeled
-     speed).
+     cycle by default, overridable via --bins-per-decade), and the
+     area-weighted mean modeled/observed speed ratio is computed per bin,
+     restricted to each bin's interquartile range of ratio values to
+     reduce sensitivity to outliers.
+  2. A curve is fit to log10(area-weighted mean ratio) vs. log10(modeled
+     speed) bin centers, using either a low-degree polynomial (``polyfit``,
+     the default) or a piecewise-linear interpolant directly through the
+     bin means (``piecewise-linear``); see ``--fit-type``.
   3. Each grounded cell's correction factor is the fitted ratio, evaluated at
      that cell's own modeled speed (clipped to the fit's bin range to avoid
      extrapolation blowups), raised to the 1/3 power.
@@ -18,8 +22,9 @@ For each region in ``region_mask_file``:
      ``^(1/3)`` correction) at/above ``haf_end``.
 
 The corrected ``muFriction`` field is written to a new copy of
-``mesh_file``. Diagnostic plots (per-region heatmap-with-fit and a
-spatial map of the mu ratio, i.e. after/before) are also produced.
+``mesh_file``. Diagnostic plots (per-region heatmap-with-fit, showing the
+area-weighted bin means as well as the fitted curve, and a spatial map of
+the mu ratio, i.e. after/before) are also produced.
 
 Reference for the relevant calculations/variable names:
 ``plot_regional_velo_haf_diffs.py``.
@@ -42,9 +47,9 @@ SEC_PER_YEAR = 365.0 * 24.0 * 60.0 * 60.0
 RHO_I = 910.0
 RHO_W = 1028.0
 
-# 4 bins per log cycle (decade) in log10(modeled-speed) space.
-BINS_PER_DECADE = 4
-BIN_WIDTH = 1.0 / BINS_PER_DECADE
+# Default bins per log cycle (decade) in log10(modeled-speed) space;
+# overridable via the --bins-per-decade CLI argument.
+DEFAULT_BINS_PER_DECADE = 4
 # Minimum number of valid cells a bin must contain to be used in the fit.
 MIN_CELLS_PER_BIN = 10
 
@@ -164,32 +169,41 @@ def cubic_smoothstep(t):
     return 3.0 * t**2 - 2.0 * t**3
 
 
-def compute_bin_edges(log_model_valid):
+def compute_bin_edges(log_model_valid, bins_per_decade):
     """
-    Compute global log10(modeled-speed) bin edges, at BINS_PER_DECADE bins
+    Compute global log10(modeled-speed) bin edges, at bins_per_decade bins
     per decade, spanning the full range of valid data (snapped outward to
     the bin-width grid so every data point falls within some bin).
     """
 
-    lo = np.floor(log_model_valid.min() / BIN_WIDTH) * BIN_WIDTH
-    hi = np.ceil(log_model_valid.max() / BIN_WIDTH) * BIN_WIDTH
+    bin_width = 1.0 / bins_per_decade
+    lo = np.floor(log_model_valid.min() / bin_width) * bin_width
+    hi = np.ceil(log_model_valid.max() / bin_width) * bin_width
     if hi <= lo:
-        hi = lo + BIN_WIDTH
-    n_bins = int(round((hi - lo) / BIN_WIDTH))
+        hi = lo + bin_width
+    n_bins = int(round((hi - lo) / bin_width))
     return np.linspace(lo, hi, n_bins + 1)
 
 
-def fit_region_ratio(log_model, ratio, bin_edges, poly_degree):
+def fit_region_ratio(log_model, ratio, area, bin_edges, poly_degree, fit_type):
     """
-    Bin (log_model, ratio) pairs into bin_edges, compute the mean ratio per
-    bin, and fit a poly_degree polynomial to log10(mean ratio) vs. bin
-    center, using only bins with at least MIN_CELLS_PER_BIN cells.
+    Bin (log_model, ratio) pairs into bin_edges, compute the area-weighted
+    mean ratio per bin (restricted to each bin's interquartile range of
+    ratio values, to reduce sensitivity to outliers), and fit a curve to
+    log10(area-weighted mean ratio) vs. bin center, using only bins with
+    at least MIN_CELLS_PER_BIN cells (before IQR filtering).
 
-    Returns (coeffs, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo,
-    fit_hi) where coeffs is None if there were not enough usable bins to
-    fit. bin_centers/bin_mean_log_ratio/bin_counts cover every bin with at
-    least 1 cell (for heatmap/diagnostic plotting), regardless of whether
-    that bin was used in the fit.
+    ``fit_type`` is either ``"polyfit"`` (fit a ``poly_degree`` polynomial,
+    weighted by each usable bin's total IQR-filtered area) or
+    ``"piecewise-linear"`` (linearly interpolate directly between the
+    usable bins' area-weighted means).
+
+    Returns (fit, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo,
+    fit_hi) where ``fit`` is a dict describing the fitted curve (see
+    ``evaluate_log_ratio_fit``), or ``None`` if there were not enough
+    usable bins to fit. bin_centers/bin_mean_log_ratio/bin_counts cover
+    every bin with at least 1 cell (for heatmap/diagnostic plotting),
+    regardless of whether that bin was used in the fit.
     """
 
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
@@ -198,27 +212,65 @@ def fit_region_ratio(log_model, ratio, bin_edges, poly_degree):
 
     bin_mean_log_ratio = np.full(n_bins, np.nan)
     bin_counts = np.zeros(n_bins, dtype=int)
+    bin_total_area = np.zeros(n_bins)
 
     for i in range(n_bins):
         in_bin = bin_index == i
         count = int(np.count_nonzero(in_bin))
         bin_counts[i] = count
         if count > 0:
-            bin_mean_log_ratio[i] = np.log10(np.mean(ratio[in_bin]))
+            bin_ratio = ratio[in_bin]
+            bin_area = area[in_bin]
+            # Restrict to the bin's interquartile range of ratio values
+            # before averaging, to reduce sensitivity to outliers.
+            q1, q3 = np.percentile(bin_ratio, [25.0, 75.0])
+            iqr_mask = (bin_ratio >= q1) & (bin_ratio <= q3)
+            if not np.any(iqr_mask):
+                iqr_mask = np.ones_like(bin_ratio, dtype=bool)
+            total_area = np.sum(bin_area[iqr_mask])
+            bin_total_area[i] = total_area
+            bin_mean_log_ratio[i] = np.log10(np.sum(bin_ratio[iqr_mask] * bin_area[iqr_mask]) / total_area)
 
     usable = bin_counts >= MIN_CELLS_PER_BIN
     n_usable = int(np.count_nonzero(usable))
-    if n_usable < poly_degree + 1:
+    min_bins_needed = (poly_degree + 1) if fit_type == "polyfit" else 2
+    if n_usable < min_bins_needed:
         return None, bin_centers, bin_mean_log_ratio, bin_counts, None, None
 
-    weights = np.sqrt(bin_counts[usable].astype(float))
-    coeffs = np.polyfit(bin_centers[usable], bin_mean_log_ratio[usable], deg=poly_degree, w=weights)
     fit_lo = bin_centers[usable].min()
     fit_hi = bin_centers[usable].max()
-    return coeffs, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi
+
+    if fit_type == "polyfit":
+        weights = np.sqrt(bin_total_area[usable])
+        coeffs = np.polyfit(bin_centers[usable], bin_mean_log_ratio[usable], deg=poly_degree, w=weights)
+        fit = {"type": "polyfit", "coeffs": coeffs}
+    elif fit_type == "piecewise-linear":
+        fit = {"type": "piecewise-linear", "xp": bin_centers[usable], "fp": bin_mean_log_ratio[usable]}
+    else:
+        raise ValueError(f"Unknown fit_type '{fit_type}'")
+
+    return fit, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi
 
 
-def plot_region_heatmap(region_label, region_suffix, log_obs, log_model, coeffs, fit_lo, fit_hi, date_label):
+def evaluate_log_ratio_fit(fit, log_x):
+    """
+    Evaluate a fit produced by ``fit_region_ratio`` (either a polynomial or
+    a piecewise-linear interpolant) at the given log10(modeled speed)
+    value(s). Values outside the fit's bin range should be clipped by the
+    caller first to avoid extrapolation; ``np.interp`` clamps to the
+    endpoint values automatically for the piecewise-linear case.
+    """
+
+    if fit["type"] == "polyfit":
+        return np.polyval(fit["coeffs"], log_x)
+    elif fit["type"] == "piecewise-linear":
+        return np.interp(log_x, fit["xp"], fit["fp"])
+    raise ValueError(f"Unknown fit type '{fit['type']}'")
+
+
+def plot_region_heatmap(
+    region_label, region_suffix, log_obs, log_model, fit, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi, date_label
+):
     axis_lo, axis_hi = -2.0, 5.0
     heatmap_bins = np.linspace(axis_lo, axis_hi, 141)
 
@@ -227,13 +279,25 @@ def plot_region_heatmap(region_label, region_suffix, log_obs, log_model, coeffs,
     fig.colorbar(heatmap_img, ax=ax, label="Count")
     ax.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
 
-    if coeffs is not None:
+    # Area-weighted mean ratio per populated bin, converted to the same
+    # (log_obs, log_model) heatmap coordinates as the fitted curve below:
+    # log_obs = log_model - log10(ratio).
+    populated = bin_counts > 0
+    if np.any(populated):
+        y_bins = bin_centers[populated]
+        x_bins = y_bins - bin_mean_log_ratio[populated]
+        ax.plot(
+            x_bins, y_bins, linestyle="none", marker="o", markersize=5,
+            markerfacecolor="orange", markeredgecolor="k", label="Area-weighted bin mean",
+        )
+
+    if fit is not None:
         # The fit is log10(ratio) vs. log10(modeled speed), i.e.
         # y_fit (log_model) is the independent variable; invert
         # ratio = model/obs to get the corresponding log10(observed speed)
         # for each point on the curve: log_obs = log_model - log10(ratio).
         y_fit = np.linspace(fit_lo, fit_hi, 100)
-        x_fit = y_fit - np.polyval(coeffs, y_fit)
+        x_fit = y_fit - evaluate_log_ratio_fit(fit, y_fit)
         ax.plot(x_fit, y_fit, color="r", linewidth=1.5, label="Fitted ratio")
 
     ax.set_xlim(axis_lo, axis_hi)
@@ -305,7 +369,22 @@ def main():
         "--poly-degree",
         type=int,
         default=3,
-        help="Degree of the polynomial fit to log10(ratio) vs. log10(modeled speed) (default: %(default)s).",
+        help="Degree of the polynomial fit to log10(ratio) vs. log10(modeled speed) (default: %(default)s). "
+        "Ignored if --fit-type is piecewise-linear.",
+    )
+    parser.add_argument(
+        "--fit-type",
+        choices=("polyfit", "piecewise-linear"),
+        default="polyfit",
+        help="Type of curve fit to log10(area-weighted mean ratio) vs. log10(modeled speed) bin centers: "
+        "a 'polyfit' polynomial (default) or a 'piecewise-linear' interpolant directly through the bin means.",
+    )
+    parser.add_argument(
+        "--bins-per-decade",
+        type=int,
+        default=DEFAULT_BINS_PER_DECADE,
+        help="Number of speed bins per log10 cycle (decade) used for the ratio fit and heatmap bin means "
+        "(default: %(default)s).",
     )
 
     args = parser.parse_args()
@@ -321,6 +400,7 @@ def main():
     bed = at_time(ds_mesh["bedTopography"], 0)
     mu_old_da = at_time(ds_mesh["muFriction"], 0)
     mu_old = mu_old_da.values
+    area = ds_mesh["areaCell"].values
 
     obs_u = at_time(ds_mesh["observedSurfaceVelocityX"], 0)
     obs_v = at_time(ds_mesh["observedSurfaceVelocityY"], 0)
@@ -345,7 +425,7 @@ def main():
     # Global bin edges, shared across all regions, from the full valid-data
     # range of log10(modeled speed).
     log_model_all = np.log10(model_speed[valid_base])
-    bin_edges = compute_bin_edges(log_model_all)
+    bin_edges = compute_bin_edges(log_model_all, args.bins_per_decade)
 
     # Descriptor used for the mu ratio map (built once; a fresh deep copy
     # is culled per-region, since mosaic.utils.cull_mesh mutates
@@ -370,7 +450,7 @@ def main():
     n_skipped = 0
     for region_index in range(n_regions):
         region_label = names[region_index] if names is not None else str(region_index)
-        region_suffix = f"_region{region_index}_{sanitize_filename_component(region_label)}"
+        region_suffix = f"_region{region_index:02d}_{sanitize_filename_component(region_label)}"
         try:
             region_mask_da = ds_regions["regionCellMasks"].isel(nRegions=region_index).astype(bool)
             region_mask = region_mask_da.values
@@ -385,15 +465,18 @@ def main():
             log_obs_region = np.log10(obs_speed[region_valid])
             log_model_region = np.log10(model_speed[region_valid])
             ratio_region = ratio_all[region_valid]
+            area_region = area[region_valid]
 
-            coeffs, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi = fit_region_ratio(
-                log_model_region, ratio_region, bin_edges, args.poly_degree
+            fit, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi = fit_region_ratio(
+                log_model_region, ratio_region, area_region, bin_edges, args.poly_degree, args.fit_type
             )
 
-            if coeffs is None:
+            if fit is None:
+                min_bins_needed = (args.poly_degree + 1) if args.fit_type == "polyfit" else 2
                 raise ValueError(
                     f"Region '{region_label}' does not have enough populated speed bins "
-                    f"(>= {MIN_CELLS_PER_BIN} cells/bin) to fit a degree-{args.poly_degree} polynomial; skipping."
+                    f"(>= {MIN_CELLS_PER_BIN} cells/bin, needs >= {min_bins_needed} such bins "
+                    f"for fit type '{args.fit_type}'); skipping."
                 )
 
             # Per-cell correction factor for this region: evaluate the fit
@@ -405,7 +488,7 @@ def main():
             eval_mask = region_mask & np.isfinite(model_speed) & (model_speed > 0.0)
             log_model_region_full = np.log10(model_speed[eval_mask])
             log_model_clipped = np.clip(log_model_region_full, fit_lo, fit_hi)
-            log_ratio_fit = np.polyval(coeffs, log_model_clipped)
+            log_ratio_fit = evaluate_log_ratio_fit(fit, log_model_clipped)
             ratio_fit_field[eval_mask] = 10.0**log_ratio_fit
 
             x_region = ds_mesh.xCell.where(region_mask_da, drop=True)
@@ -415,7 +498,10 @@ def main():
             ymin = float(y_region.min())
             ymax = float(y_region.max())
 
-            plot_region_heatmap(region_label, region_suffix, log_obs_region, log_model_region, coeffs, fit_lo, fit_hi, date_label)
+            plot_region_heatmap(
+                region_label, region_suffix, log_obs_region, log_model_region, fit,
+                bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi, date_label,
+            )
 
             # Build the culled mesh/descriptor for the mu ratio map.
             descriptor = copy.deepcopy(descriptor_pristine)
