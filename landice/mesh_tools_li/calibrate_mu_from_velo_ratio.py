@@ -8,24 +8,30 @@ For each region in ``region_mask_file``:
      cycle by default, overridable via --bins-per-decade), and the
      area-weighted mean modeled/observed speed ratio is computed per bin,
      restricted to each bin's interquartile range of ratio values to
-     reduce sensitivity to outliers.
+     reduce sensitivity to outliers. By default, "modeled speed"/
+     "observed speed" are ``surfaceSpeed``/observed surface speed; with
+     ``--use-basal-speed-ratio``, the deformation velocity (modeled
+     ``surfaceSpeed - basalSpeed``) is removed from both, so the ratio
+     is instead (modeled ``basalSpeed``) / (observed surface speed minus
+     modeled deformation velocity).
   2. A curve is fit to log10(area-weighted mean ratio) vs. log10(modeled
      speed) bin centers, using either a low-degree polynomial (``polyfit``,
      the default) or a piecewise-linear interpolant directly through the
      bin means (``piecewise-linear``); see ``--fit-type``.
   3. Each grounded cell's correction factor is the fitted ratio, evaluated at
      that cell's own modeled speed (clipped to the fit's bin range to avoid
-     extrapolation blowups), raised to the 1/3 power.
+     extrapolation blowups), raised to the ``--exponent`` power (default
+     1/3).
   4. A height-above-flotation (HAF) cubic-smoothstep taper (the same for
      every region) blends the correction between "none" (exponent 0, no
-     change) at/below ``haf_begin`` and "full" (exponent 1, the complete
-     ``^(1/3)`` correction) at/above ``haf_end``.
+     change) at/below ``haf_begin`` and "full" (the complete ``^exponent``
+     correction) at/above ``haf_end``.
 
 The corrected ``muFriction`` field is written to a new copy of
 ``mesh_file``. A per-region two-panel diagnostic PNG is also produced:
 (left) the heatmap-with-fit, showing the area-weighted bin means as well
 as the fitted curve, and (right) a spatial map of the mu ratio (i.e.
-after/before), using a fixed colorbar range of [0.5, 1.5] with
+after/before), using a fixed log-scale colorbar range of [0.1, 100] with
 above/below-range indicators.
 
 Reference for the relevant calculations/variable names:
@@ -272,14 +278,14 @@ def evaluate_log_ratio_fit(fit, log_x):
 
 def plot_region_summary(
     region_label, region_suffix, log_obs, log_model, fit, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi, date_label,
-    descriptor, mu_before_mesh, mu_after_mesh, h_mesh, bed_mesh, xmin, xmax, ymin, ymax,
+    descriptor, mu_before_mesh, mu_after_mesh, h_mesh, bed_mesh, xmin, xmax, ymin, ymax, dpi, speed_label,
 ):
     """
     Produce a single two-panel PNG per region: (left) the modeled-vs-
     observed speed heatmap with the area-weighted bin means and fitted
     ratio curve, and (right) a spatial map of the muFriction ratio
-    (after / before correction), using a fixed colorbar range of
-    [0.5, 1.5] with above/below-range indicators.
+    (after / before correction), using a fixed log-scale colorbar range
+    of [0.1, 100] with above/below-range indicators.
     """
 
     fig, (ax_heatmap, ax_map) = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
@@ -316,9 +322,9 @@ def plot_region_summary(
     ax_heatmap.set_xlim(axis_lo, axis_hi)
     ax_heatmap.set_ylim(axis_lo, axis_hi)
     ax_heatmap.set_aspect("equal")
-    ax_heatmap.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
-    ax_heatmap.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
-    ax_heatmap.set_title(f"Modeled vs. observed surface speed (grounded ice): {date_label}")
+    ax_heatmap.set_xlabel(f"log10(observed {speed_label}) [log10(m yr$^{{-1}}$)]")
+    ax_heatmap.set_ylabel(f"log10(modeled {speed_label}) [log10(m yr$^{{-1}}$)]")
+    ax_heatmap.set_title(f"Modeled vs. observed {speed_label} (grounded ice): {date_label}")
     ax_heatmap.legend(loc="best")
 
     # --- Right panel: spatial map of the muFriction ratio ---
@@ -331,11 +337,14 @@ def plot_region_summary(
         mu_after_mesh, mu_before_mesh, out=np.ones_like(mu_after_mesh), where=mu_before_mesh != 0.0
     )
 
-    # Fixed diverging colormap range centered on 1.0 (no change), with
-    # above/below-range indicators for values outside [0.5, 1.5].
-    vmin, vmax = 0.5, 1.5
+    # Fixed log-scale diverging colormap range centered on 1.0 (no
+    # change), with above/below-range indicators for values outside
+    # [0.1, 100].
+    vmin, vmax = 0.1, 100.0
 
-    pc = mosaic.polypcolor(ax_map, descriptor, mu_ratio_mesh, cmap="RdBu_r", vmin=vmin, vmax=vmax, edgecolors="none")
+    pc = mosaic.polypcolor(
+        ax_map, descriptor, mu_ratio_mesh, cmap="RdBu_r", norm=LogNorm(vmin=vmin, vmax=vmax), edgecolors="none"
+    )
     plot_geometry(ax_map, descriptor.ds, h_mesh, bed_mesh, edge_color="k", gl_color="r")
     ax_map.set_xlim(xmin - pad_x, xmax + pad_x)
     ax_map.set_ylim(ymin - pad_y, ymax + pad_y)
@@ -348,7 +357,7 @@ def plot_region_summary(
     fig.suptitle(f"Region: {region_label}")
 
     filename = f"mu_ratio_summary{region_suffix}.png"
-    fig.savefig(filename, dpi=300)
+    fig.savefig(filename, dpi=dpi)
     plt.close(fig)
     print(f"Wrote {filename}")
 
@@ -360,7 +369,11 @@ def main():
     )
 
     parser.add_argument("mesh_file", help="MALI mesh/IC file with mesh info, observed velocity, bedTopography, thickness, and muFriction.")
-    parser.add_argument("solution_file", help="MALI output file with surfaceSpeed (time level 0 is used).")
+    parser.add_argument(
+        "solution_file",
+        help="MALI output file with surfaceSpeed (time level 0 is used); also requires basalSpeed if "
+        "--use-basal-speed-ratio is set.",
+    )
     parser.add_argument("haf_begin", type=float, help="Height above flotation [m] at/below which the correction is fully tapered off (0).")
     parser.add_argument("haf_end", type=float, help="Height above flotation [m] at/above which the correction is fully applied (1).")
     parser.add_argument("region_mask_file", help="Region mask file with regionCellMasks; every region is processed.")
@@ -390,6 +403,27 @@ def main():
         help="Number of speed bins per log10 cycle (decade) used for the ratio fit and heatmap bin means "
         "(default: %(default)s).",
     )
+    parser.add_argument(
+        "--exponent",
+        type=float,
+        default=1.0 / 3.0,
+        help="Power to which the fitted speed ratio is raised to produce the full (fully-tapered-in) muFriction "
+        "correction factor (default: %(default)s, i.e. 1/3).",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=float,
+        default=300,
+        help="DPI used when saving all figures (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--use-basal-speed-ratio",
+        action="store_true",
+        help="Use (modeled basalSpeed) / (observed surface speed minus modeled deformation velocity) as the "
+        "ratio instead of (modeled surfaceSpeed) / (observed surface speed), where the modeled deformation "
+        "velocity is surfaceSpeed - basalSpeed. Requires basalSpeed in solution_file. Cells where the "
+        "deformation-removed observed speed is <= 0 are excluded from the analysis.",
+    )
 
     args = parser.parse_args()
 
@@ -408,8 +442,26 @@ def main():
 
     obs_u = at_time(ds_mesh["observedSurfaceVelocityX"], 0)
     obs_v = at_time(ds_mesh["observedSurfaceVelocityY"], 0)
-    obs_speed = (np.sqrt(obs_u**2 + obs_v**2) * SEC_PER_YEAR).values
-    model_speed = (at_time(ds_soln["surfaceSpeed"], 0) * SEC_PER_YEAR).values
+    obs_surface_speed = (np.sqrt(obs_u**2 + obs_v**2) * SEC_PER_YEAR).values
+    model_surface_speed = (at_time(ds_soln["surfaceSpeed"], 0) * SEC_PER_YEAR).values
+
+    if args.use_basal_speed_ratio:
+        # Remove the modeled deformation velocity (surfaceSpeed - basalSpeed)
+        # from both the modeled and observed speed, so the ratio reflects
+        # the sliding (basal) component rather than the full surface speed.
+        # The observed counterpart has no independently-observed basal/
+        # deformation component, so the modeled deformation velocity is
+        # used as the best available estimate; cells where this leaves a
+        # negative "observed basal speed" are excluded below (valid_base).
+        model_basal_speed = (at_time(ds_soln["basalSpeed"], 0) * SEC_PER_YEAR).values
+        deformation_speed = model_surface_speed - model_basal_speed
+        model_speed = model_basal_speed
+        obs_speed = obs_surface_speed - deformation_speed
+        speed_label = "basal speed"
+    else:
+        model_speed = model_surface_speed
+        obs_speed = obs_surface_speed
+        speed_label = "surface speed"
 
     haf = height_above_flotation(thickness.values, bed.values)
 
@@ -423,6 +475,15 @@ def main():
         & (model_speed > 0.0)
         & grounded_mask
     )
+
+    if args.use_basal_speed_ratio:
+        n_negative_obs_basal = int(np.count_nonzero(grounded_mask & np.isfinite(obs_speed) & (obs_speed <= 0.0)))
+        if n_negative_obs_basal > 0:
+            print(
+                f"Note: {n_negative_obs_basal} grounded cell(s) have a non-positive deformation-removed "
+                "observed speed estimate (observed surface speed <= modeled deformation velocity) and are "
+                "excluded from the ratio fit/correction."
+            )
 
     ratio_all = np.divide(model_speed, obs_speed, out=np.ones_like(model_speed), where=obs_speed > 0.0)
 
@@ -550,7 +611,7 @@ def main():
     taper_t = (haf - args.haf_begin) / (args.haf_end - args.haf_begin)
     taper = cubic_smoothstep(taper_t)
 
-    mu_new = mu_old * ratio_fit_field ** (taper / 3.0)
+    mu_new = mu_old * ratio_fit_field ** (taper * args.exponent)
 
     # Now that mu_new exists, produce the deferred two-panel summary plots.
     for pending in pending_mu_plots:
@@ -577,6 +638,8 @@ def main():
             pending["xmax"],
             pending["ymin"],
             pending["ymax"],
+            args.dpi,
+            speed_label,
         )
 
     if n_regions > 1:
