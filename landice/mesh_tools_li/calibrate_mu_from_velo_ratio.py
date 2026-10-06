@@ -22,9 +22,11 @@ For each region in ``region_mask_file``:
      ``^(1/3)`` correction) at/above ``haf_end``.
 
 The corrected ``muFriction`` field is written to a new copy of
-``mesh_file``. Diagnostic plots (per-region heatmap-with-fit, showing the
-area-weighted bin means as well as the fitted curve, and a spatial map of
-the mu ratio, i.e. after/before) are also produced.
+``mesh_file``. A per-region two-panel diagnostic PNG is also produced:
+(left) the heatmap-with-fit, showing the area-weighted bin means as well
+as the fitted curve, and (right) a spatial map of the mu ratio (i.e.
+after/before), using a fixed colorbar range of [0.5, 1.5] with
+above/below-range indicators.
 
 Reference for the relevant calculations/variable names:
 ``plot_regional_velo_haf_diffs.py``.
@@ -268,16 +270,27 @@ def evaluate_log_ratio_fit(fit, log_x):
     raise ValueError(f"Unknown fit type '{fit['type']}'")
 
 
-def plot_region_heatmap(
-    region_label, region_suffix, log_obs, log_model, fit, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi, date_label
+def plot_region_summary(
+    region_label, region_suffix, log_obs, log_model, fit, bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi, date_label,
+    descriptor, mu_before_mesh, mu_after_mesh, h_mesh, bed_mesh, xmin, xmax, ymin, ymax,
 ):
+    """
+    Produce a single two-panel PNG per region: (left) the modeled-vs-
+    observed speed heatmap with the area-weighted bin means and fitted
+    ratio curve, and (right) a spatial map of the muFriction ratio
+    (after / before correction), using a fixed colorbar range of
+    [0.5, 1.5] with above/below-range indicators.
+    """
+
+    fig, (ax_heatmap, ax_map) = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
+
+    # --- Left panel: heatmap with fitted curve ---
     axis_lo, axis_hi = -2.0, 5.0
     heatmap_bins = np.linspace(axis_lo, axis_hi, 141)
 
-    fig, ax = plt.subplots(figsize=(8, 8), constrained_layout=True)
-    _, _, _, heatmap_img = ax.hist2d(log_obs, log_model, bins=heatmap_bins, cmap="viridis", norm=LogNorm())
-    fig.colorbar(heatmap_img, ax=ax, label="Count")
-    ax.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
+    _, _, _, heatmap_img = ax_heatmap.hist2d(log_obs, log_model, bins=heatmap_bins, cmap="viridis", norm=LogNorm())
+    fig.colorbar(heatmap_img, ax=ax_heatmap, label="Count")
+    ax_heatmap.plot([axis_lo, axis_hi], [axis_lo, axis_hi], color="k", linewidth=0.8, linestyle="--", label="1:1")
 
     # Area-weighted mean ratio per populated bin, converted to the same
     # (log_obs, log_model) heatmap coordinates as the fitted curve below:
@@ -286,7 +299,7 @@ def plot_region_heatmap(
     if np.any(populated):
         y_bins = bin_centers[populated]
         x_bins = y_bins - bin_mean_log_ratio[populated]
-        ax.plot(
+        ax_heatmap.plot(
             x_bins, y_bins, linestyle="none", marker="o", markersize=5,
             markerfacecolor="orange", markeredgecolor="k", label="Area-weighted bin mean",
         )
@@ -298,23 +311,17 @@ def plot_region_heatmap(
         # for each point on the curve: log_obs = log_model - log10(ratio).
         y_fit = np.linspace(fit_lo, fit_hi, 100)
         x_fit = y_fit - evaluate_log_ratio_fit(fit, y_fit)
-        ax.plot(x_fit, y_fit, color="r", linewidth=1.5, label="Fitted ratio")
+        ax_heatmap.plot(x_fit, y_fit, color="r", linewidth=1.5, label="Fitted ratio")
 
-    ax.set_xlim(axis_lo, axis_hi)
-    ax.set_ylim(axis_lo, axis_hi)
-    ax.set_aspect("equal")
-    ax.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
-    ax.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
-    ax.set_title(f"Modeled vs. observed surface speed (grounded ice): {date_label}\nRegion: {region_label}")
-    ax.legend(loc="best")
+    ax_heatmap.set_xlim(axis_lo, axis_hi)
+    ax_heatmap.set_ylim(axis_lo, axis_hi)
+    ax_heatmap.set_aspect("equal")
+    ax_heatmap.set_xlabel("log10(observed speed) [log10(m yr$^{-1}$)]")
+    ax_heatmap.set_ylabel("log10(modeled speed) [log10(m yr$^{-1}$)]")
+    ax_heatmap.set_title(f"Modeled vs. observed surface speed (grounded ice): {date_label}")
+    ax_heatmap.legend(loc="best")
 
-    filename = f"mu_ratio_heatmap{region_suffix}.png"
-    fig.savefig(filename, dpi=300)
-    plt.close(fig)
-    print(f"Wrote {filename}")
-
-
-def plot_region_mu_ratio_map(region_label, region_suffix, descriptor, mu_before_mesh, mu_after_mesh, h_mesh, bed_mesh, xmin, xmax, ymin, ymax):
+    # --- Right panel: spatial map of the muFriction ratio ---
     dx = xmax - xmin
     dy = ymax - ymin
     pad_x = 0.03 * dx if dx > 0.0 else 1000.0
@@ -324,26 +331,23 @@ def plot_region_mu_ratio_map(region_label, region_suffix, descriptor, mu_before_
         mu_after_mesh, mu_before_mesh, out=np.ones_like(mu_after_mesh), where=mu_before_mesh != 0.0
     )
 
-    # Diverging colormap centered on 1.0 (no change), one-sided range set
-    # from the 99th percentile of abs(ratio - 1).
-    max_abs_dev = float(np.nanpercentile(np.abs(mu_ratio_mesh - 1.0), 99))
-    if max_abs_dev == 0.0:
-        max_abs_dev = 0.01
-    vmin = 1.0 - max_abs_dev
-    vmax = 1.0 + max_abs_dev
+    # Fixed diverging colormap range centered on 1.0 (no change), with
+    # above/below-range indicators for values outside [0.5, 1.5].
+    vmin, vmax = 0.5, 1.5
 
-    fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
-    pc = mosaic.polypcolor(ax, descriptor, mu_ratio_mesh, cmap="RdBu_r", vmin=vmin, vmax=vmax, edgecolors="none")
-    plot_geometry(ax, descriptor.ds, h_mesh, bed_mesh, edge_color="k", gl_color="r")
-    ax.set_xlim(xmin - pad_x, xmax + pad_x)
-    ax.set_ylim(ymin - pad_y, ymax + pad_y)
-    ax.set_aspect("equal")
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-    ax.set_title(f"muFriction ratio (after / before speed-ratio correction)\nRegion: {region_label}")
-    fig.colorbar(pc, ax=ax, label="muFriction ratio (after / before)", extend="both")
+    pc = mosaic.polypcolor(ax_map, descriptor, mu_ratio_mesh, cmap="RdBu_r", vmin=vmin, vmax=vmax, edgecolors="none")
+    plot_geometry(ax_map, descriptor.ds, h_mesh, bed_mesh, edge_color="k", gl_color="r")
+    ax_map.set_xlim(xmin - pad_x, xmax + pad_x)
+    ax_map.set_ylim(ymin - pad_y, ymax + pad_y)
+    ax_map.set_aspect("equal")
+    ax_map.set_xlabel("x [m]")
+    ax_map.set_ylabel("y [m]")
+    ax_map.set_title("muFriction ratio (after / before speed-ratio correction)")
+    fig.colorbar(pc, ax=ax_map, label="muFriction ratio (after / before)", extend="both")
 
-    filename = f"mu_ratio_map{region_suffix}.png"
+    fig.suptitle(f"Region: {region_label}")
+
+    filename = f"mu_ratio_summary{region_suffix}.png"
     fig.savefig(filename, dpi=300)
     plt.close(fig)
     print(f"Wrote {filename}")
@@ -498,11 +502,6 @@ def main():
             ymin = float(y_region.min())
             ymax = float(y_region.max())
 
-            plot_region_heatmap(
-                region_label, region_suffix, log_obs_region, log_model_region, fit,
-                bin_centers, bin_mean_log_ratio, bin_counts, fit_lo, fit_hi, date_label,
-            )
-
             # Build the culled mesh/descriptor for the mu ratio map.
             descriptor = copy.deepcopy(descriptor_pristine)
             cells_to_cull = ~region_mask
@@ -513,11 +512,20 @@ def main():
             bed_mesh = bed.isel(nCells=index_to_cell_id).values
 
             # mu_after is computed below (after the HAF taper is applied
-            # globally), so defer the mu-ratio-map plot until then.
+            # globally), so defer the combined heatmap+mu-ratio-map plot
+            # until then.
             pending_mu_plots.append(
                 dict(
                     region_label=region_label,
                     region_suffix=region_suffix,
+                    log_obs_region=log_obs_region,
+                    log_model_region=log_model_region,
+                    fit=fit,
+                    bin_centers=bin_centers,
+                    bin_mean_log_ratio=bin_mean_log_ratio,
+                    bin_counts=bin_counts,
+                    fit_lo=fit_lo,
+                    fit_hi=fit_hi,
                     descriptor=descriptor,
                     index_to_cell_id=index_to_cell_id,
                     h_mesh=h_mesh,
@@ -544,13 +552,22 @@ def main():
 
     mu_new = mu_old * ratio_fit_field ** (taper / 3.0)
 
-    # Now that mu_new exists, produce the deferred mu-ratio maps.
+    # Now that mu_new exists, produce the deferred two-panel summary plots.
     for pending in pending_mu_plots:
         mu_before_mesh = mu_old[pending["index_to_cell_id"]]
         mu_after_mesh = mu_new[pending["index_to_cell_id"]]
-        plot_region_mu_ratio_map(
+        plot_region_summary(
             pending["region_label"],
             pending["region_suffix"],
+            pending["log_obs_region"],
+            pending["log_model_region"],
+            pending["fit"],
+            pending["bin_centers"],
+            pending["bin_mean_log_ratio"],
+            pending["bin_counts"],
+            pending["fit_lo"],
+            pending["fit_hi"],
+            date_label,
             pending["descriptor"],
             mu_before_mesh,
             mu_after_mesh,
